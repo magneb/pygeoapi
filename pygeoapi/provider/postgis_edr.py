@@ -90,7 +90,7 @@ class PostGISRasterProvider(BaseProvider):
                          self._coverage_properties['time_axis_label']]
             self.crs = self._coverage_properties['bbox_crs']
             self.num_bands = self._coverage_properties['num_bands']
-            self.fields = [str(num) for num in range(1, self.num_bands+1)]
+            #self.fields = [str(num) for num in range(1, self.num_bands+1)]
             self.native_format = provider_def['format']['name']
             
         except Exception as err:
@@ -158,7 +158,9 @@ class PostGISRasterProvider(BaseProvider):
     def get_coverage_rangetype(self, *args, **kwargs):
         """Provide coverage rangetype
 
-        The rangeType element describes the structure and semantics of a coverage's range values, including (optionally) restrictions on the interpolation allowed on such values.
+        The rangeType element describes the structure and semantics 
+        of a coverage's range values, including (optionally) 
+        restrictions on the interpolation allowed on such values.
         
         :returns: CIS JSON object of rangetype metadata
         """
@@ -175,7 +177,8 @@ class PostGISRasterProvider(BaseProvider):
                     join pg_catalog.pg_statio_all_tables as st \
                         on c.table_name=st.relname \
                     full outer join pg_catalog.pg_description pgd \
-                        on(pgd.objsubid=c.ordinal_position and pgd.objoid=st.relid) \
+                        on (pgd.objsubid=c.ordinal_position and \
+                            pgd.objoid=st.relid) \
                     where c.table_name='{self.table}';\
                     ")
                 results = cursor.fetchall()
@@ -213,7 +216,7 @@ class PostGISRasterProvider(BaseProvider):
     
     def get_fields(self):
         """
-        Get fields from PostgreSQL table (columns are field)
+        Get fields from PostgreSQL table (columns are field?)
 
         :returns: dict of fields
         """
@@ -240,6 +243,135 @@ class PostGISRasterProvider(BaseProvider):
         """
 
         return ['position', 'area']
+    
+    def query(self, startindex=0, limit=1, resulttype='results', 
+              bbox=[], properties=[], select_properties=[], 
+              sortby=[], **kwargs):
+        """Query Postgis for all the content.
+        e,g: http://localhost:5000/collections/hotosm_bdi_waterways/items?
+        limit=1&resulttype=results
+
+        Args:
+            startindex (int, optional): [description]. Defaults to 0.
+            limit (int, optional): [description]. Defaults to 10.
+        """
+        
+        query_params = {} # accumulate query parameters for output
+        end_index = startindex + limit # used for geocursor
+        
+        LOGGER.debug('Querying PostGIS...')
+        LOGGER.debug(f'Query parameters: \n{kwargs}')
+        LOGGER.debug('Query type: {}'.format(kwargs.get('query_type')))
+
+        # handle datetime, especially if the datetime parameter is empty!
+        requested_datetime = kwargs.get('datetime_')
+        if not requested_datetime:
+            LOGGER.warning('Datetime parameter required! Guessing!')
+            # selecting last avaliable datetime from the database
+            requested_datetime = str(self._get_datetime_records()[0])
+            
+        # handle the hits resulttype (not really sure why yet!)
+        if resulttype == 'hits':
+            LOGGER.debug('hits feature not implemented!')
+            return None
+            
+        
+        # process wkt input parameter: 
+        query_params = self._process_wkt_parameter(kwargs.get('wkt'))
+        LOGGER.debug(f'WKT query parameter: {query_params}')
+        LOGGER.debug(f"WKT query parameter: {kwargs.get('wkt')}")
+        
+        # Run an if to construct the query before 
+        # starting the database connection
+        if kwargs.get('query_type') == 'position' and requested_datetime:
+            # query was a position query. 
+            # needs a where clause and a query 
+            where_clause = f"where \"useCaseId\" = 'MFMC01' \
+                and \"timeTag\" = '{requested_datetime}' limit 1"
+            
+            sql_query = SQL(f"DECLARE \"geo_cursor\" CURSOR FOR \
+                SELECT pid, \"useCaseName\", n, v, ST_Value({self.rast} , 1, \
+                    ST_SetSRID(ST_GeomFromText('{kwargs.get('wkt')}'), 4326)) as raster_value\
+                    from {self.table} \
+                    {where_clause}")
+        else:
+            LOGGER.error('unsupported query type!')
+            return ('unsupported query type!')
+        
+        # dangleling:
+        """where_clause = self.__get_where_clauses(
+                properties=properties, bbox=bbox)"""
+        
+        # Start database query
+        with DatabaseConnection(self.conn_dic, self.table) as db:
+            cursor = db.conn.cursor(cursor_factory=RealDictCursor)
+            
+            LOGGER.debug('SQL Query: {}'.format(sql_query.as_string(cursor)))
+            LOGGER.debug('Start Index: {}'.format(startindex))
+            LOGGER.debug('End Index: {}'.format(end_index))
+            
+            # cursor.execute(sql_query)
+            # row_data = cursor.fetchall()
+            
+            try:
+                cursor.execute(sql_query)
+                for index in [startindex, limit]:
+                    cursor.execute(f"fetch forward {index} from geo_cursor")
+            except Exception as err:
+                LOGGER.error('Error executing sql_query: {}'.format(
+                    sql_query.as_string(cursor)))
+                LOGGER.error(err)
+                raise ProviderQueryError()
+
+            row_data = cursor.fetchall()
+            
+        return row_data
+    # Helper functions will be at the end 
+    
+    def _process_wkt_parameter(self, wkt):
+        
+        query_params = {}
+        if wkt is not None:
+            LOGGER.debug('Processing WKT')
+            LOGGER.debug('Geometry type: {}'.format(wkt.type))
+            if wkt.type == 'Point':
+                query_params[self._coverage_properties[
+                    'x_axis_label']] = wkt.x
+                query_params[self._coverage_properties[
+                    'y_axis_label']] = wkt.y
+            elif wkt.type == 'LineString':
+                query_params[self._coverage_properties[
+                    'x_axis_label']] = wkt.xy[0]  # noqa
+                query_params[self._coverage_properties[
+                    'y_axis_label']] = wkt.xy[1]  # noqa
+            elif wkt.type == 'Polygon':
+                query_params[self._coverage_properties[
+                    'x_axis_label']] = slice(
+                        wkt.bounds[0], wkt.bounds[2])  # noqa
+                query_params[self._coverage_properties[
+                    'y_axis_label']] = slice(
+                        wkt.bounds[1], wkt.bounds[3])  # noqa
+                pass
+            
+        return query_params
+    
+    def _get_datetime_records(self):
+        """Fetch all avaliable datetimes from the database
+        or atleast some of them? 
+        
+        returns: 'ordered' list of datetime objects
+            
+        """
+        with DatabaseConnection(self.conn_dic, self.table) as db:
+                cursor = db.conn.cursor(cursor_factory=RealDictCursor)
+                cursor.execute(f'select \
+                               distinct "{self.time_field}" \
+                               from {self.table} \
+                               order by "{self.time_field}" desc \
+                               ')
+                results = cursor.fetchall()
+        
+        return [result[f"{self.time_field}"] for result in results]
     
     def __get_where_clauses(self, properties=[], bbox=[]):
         """Generarates WHERE conditions to be implemented in query.
@@ -271,38 +403,7 @@ class PostGISRasterProvider(BaseProvider):
             LOGGER.debug('')
 
         return where_clause
-
-    def query(self, startindex=0, limit=1, bbox=[], properties=[], **kwargs):
-        """Query Postgis for all the content.
-        e,g: http://localhost:5000/collections/hotosm_bdi_waterways/items?
-        limit=1&resulttype=results
-
-        Args:
-            startindex (int, optional): [description]. Defaults to 0.
-            limit (int, optional): [description]. Defaults to 10.
-        """
-        query_params = {}
-        
-        LOGGER.debug('Querying PostGIS')
-        
-        LOGGER.debug('Query parameters: {}'.format(kwargs))
-
-        LOGGER.debug('Query type: {}'.format(kwargs.get('query_type')))
-        
-        datetime_ = kwargs.get('datetime_')
-        if datetime_ is not None:
-            query_params[self._coverage_properties['time_axis_label']] = datetime_  # noqa
-            
-
-        with DatabaseConnection(self.conn_dic, self.table) as db:
-            cursor = db.conn.cursor(cursor_factory=RealDictCursor)
-            
-            where_clause = self.__get_where_clauses(
-                properties=properties, bbox=bbox
-            )
-        pass 
     
-    # Helper functions will be at the end 
     def _get_coverage_properties(self):
         """Helper function to normalize coverage properties
         
@@ -321,9 +422,9 @@ class PostGISRasterProvider(BaseProvider):
                 # get the number of bands if not avaliable
                 if not self.num_bands:
                     sql_query = SQL(
-                        "select \
-                        max(ST_numbands(rast)) as rast_bands \
-                        from prediction_grids \
+                        f"select \
+                        max(ST_numbands({self.rast})) as rast_bands \
+                        from {self.table} \
                         ")
                     cursor.execute(sql_query)
                     results = cursor.fetchall()
@@ -333,9 +434,9 @@ class PostGISRasterProvider(BaseProvider):
                 # extract the bounds asuming all rasters have the same bounds..?
                 if True:  # why?
                     sql_query = SQL(
-                        "select \
-                        st_extent(st_envelope(rast)) as bbox \
-                        from prediction_grids pg \
+                        f"select \
+                        st_extent(st_envelope({self.rast})) as bbox \
+                        from {self.table} \
                         limit 1 \
                         ")
                     cursor.execute(sql_query)
@@ -350,10 +451,10 @@ class PostGISRasterProvider(BaseProvider):
                 # extract the widt and height of the raster
                 if True:
                     sql_query = SQL(
-                        "select \
-                        st_width(rast) as rast_width, \
-                        st_height(rast) as rast_height \
-                        from prediction_grids pg \
+                        f"select \
+                        st_width({self.rast}) as rast_width, \
+                        st_height({self.rast}) as rast_height \
+                        from {self.table} \
                         limit 1 \
                         ")
                     cursor.execute(sql_query)
@@ -381,7 +482,7 @@ class PostGISRasterProvider(BaseProvider):
             'bbox_units': 'deg',
             'x_axis_label': 'Long',
             'y_axis_label': 'Lat',
-            'time_axis_label': 'hours',
+            'time_axis_label': 'datetime', # get from column info?
             'width': width,
             'height': height,
             'resx': resx,
