@@ -31,19 +31,20 @@ from contextlib import nullcontext
 import logging
 from types import LambdaType
 # import json
-import psycopg2
+# import psycopg2
 from psycopg2.extras import RealDictCursor
 from psycopg2.sql import SQL, Identifier, Literal
 from pygeoapi.provider.base import BaseProvider, \
-    ProviderConnectionError, ProviderQueryError, ProviderItemNotFoundError
+    ProviderConnectionError, ProviderQueryError, \
+    ProviderItemNotFoundError
 
 # Re-use the DatabaseConnection class from the postgresql privider package!
-from pygeoapi.provider.postgresql import DatabaseConnection
-#from pygeoapi.provider.postgresql import get_fields
+from pygeoapi.provider.postgresql import DatabaseConnection 
 
-# from psycopg2.extras import RealDictCursor
-#from pygeoapi.provider.postgresql import DatabaseConnection, PostgreSQLProvider
 # from pygeoapi.provider.xarray_ import _to_datetime_string, XarrayProvider
+from pygeoapi.provider.rasterio_ import RasterioProvider
+from rasterio.io import MemoryFile
+import rasterio
 
 LOGGER = logging.getLogger(__name__)
 
@@ -68,6 +69,9 @@ class PostGISRasterProvider(BaseProvider):
         self.conn_dic = provider_def['data']
         self.rast = provider_def['rast_field']
         self.instances = []
+
+        self._data = {'profile': {'driver' : 'rasterio'},
+                      'tags': ['SWAN']}
         
         LOGGER.debug('Setting Postgresql properties:')
         LOGGER.debug('Connection String:{}'.format(
@@ -97,14 +101,16 @@ class PostGISRasterProvider(BaseProvider):
             LOGGER.warning(err)
             raise ProviderConnectionError(err)
         
+        
+    """    
     def get_coverage_domainset(self, *args, **kwargs):
-        """Provide coverage domainset in json format
+        ""Provide coverage domainset in json format
         The domainSet describes the direct positions of the coverage,
         i.e., the locations for which values are available.
 
         Returns:
         :returns: CIS JSON object of domainset metadata
-        """
+        ""
         LOGGER.debug('get_coverage_domainset triggered')
         domainset = {
             'type': 'DomainSetType',
@@ -156,14 +162,18 @@ class PostGISRasterProvider(BaseProvider):
         return domainset
     
     def get_coverage_rangetype(self, *args, **kwargs):
-        """Provide coverage rangetype
+        ""Provide coverage rangetype
 
         The rangeType element describes the structure and semantics 
         of a coverage's range values, including (optionally) 
         restrictions on the interpolation allowed on such values.
         
+        I now believe this is supposed to be the raster bands 
+        individual metadata. And not just column metadata. 
+        but is that supposed to be get fields then?
+        
         :returns: CIS JSON object of rangetype metadata
-        """
+        ""
         LOGGER.debug('get coverage rangetype:')
         if True:
             with DatabaseConnection(self.conn_dic, self.table) as db:
@@ -213,6 +223,7 @@ class PostGISRasterProvider(BaseProvider):
             })
             
         return rangetype
+    """
     
     def get_fields(self):
         """
@@ -220,12 +231,59 @@ class PostGISRasterProvider(BaseProvider):
 
         :returns: dict of fields
         """
-        """
+        LOGGER.debug('get_fields() triggered!')
+        
         if not self.fields:
             with DatabaseConnection(self.conn_dic, self.table) as db:
-                self.fields = db.fields
-        """
-        return self.get_coverage_rangetype()
+                cursor = db.conn.cursor(cursor_factory=RealDictCursor)
+                cursor.execute(f" \
+                    select \
+                        c.ordinal_position, \
+                        c.column_name, \
+                        c.data_type, \
+                        pgd.description \
+                    from information_schema.columns c \
+                    join pg_catalog.pg_statio_all_tables as st \
+                        on c.table_name=st.relname \
+                    full outer join pg_catalog.pg_description pgd \
+                        on (pgd.objsubid=c.ordinal_position and \
+                            pgd.objoid=st.relid) \
+                    where c.table_name='{self.table}';\
+                    ")
+                results = cursor.fetchall()
+            
+            self.fields = {
+                'type': 'DataRecordType',
+                'field': []
+            }
+                
+            for result in results:
+                LOGGER.debug('Setting field {}'.format(
+                    result['column_name']))
+                
+                ordinal, name, type, comment = result.values()
+
+                # this is perhaps a little stripped down...
+                self.fields['field'].append({
+                    'id': ordinal,
+                    'type': type,
+                    'name': name,
+                    'definition': comment
+                })
+                """, # this came from the rangetype def. not sure if useful?
+                    'nodata': 'null',
+                    'uom': {
+                        'id': 'http://www.opengis.net/def/uom/UCUM/{}'.format(
+                            type),
+                        'type': 'UnitReference',
+                        'code': type
+                    },
+                    '_meta': {
+                        'tags': []
+                    }
+                })"""
+                
+        return self.fields
     
     def get_instance(self, instance):
         """
@@ -234,7 +292,7 @@ class PostGISRasterProvider(BaseProvider):
         :returns: `bool` of whether instance is valid
         """
 
-        return NotImplementedError()
+        return True
 
     def get_query_types(self):
         """Provide supported query types
@@ -264,6 +322,7 @@ class PostGISRasterProvider(BaseProvider):
         LOGGER.debug('Query type: {}'.format(kwargs.get('query_type')))
 
         # handle datetime, especially if the datetime parameter is empty!
+        # TO-DO: Datetime should be handled as a range! 
         requested_datetime = kwargs.get('datetime_')
         if not requested_datetime:
             LOGGER.warning('Datetime parameter required! Guessing!')
@@ -275,24 +334,53 @@ class PostGISRasterProvider(BaseProvider):
             LOGGER.debug('hits feature not implemented!')
             return None
             
-        
         # process wkt input parameter: 
         query_params = self._process_wkt_parameter(kwargs.get('wkt'))
         LOGGER.debug(f'WKT query parameter: {query_params}')
         LOGGER.debug(f"WKT query parameter: {kwargs.get('wkt')}")
         
-        # Run an if to construct the query before 
-        # starting the database connection
-        if kwargs.get('query_type') == 'position' and requested_datetime:
-            # query was a position query. 
+        # Run an if to construct the query before starting the database 
+        # connection so that we dont need so much duplicate code...
+        
+        # Handle position queries
+        if kwargs.get('query_type') == 'position' and requested_datetime: 
             # needs a where clause and a query 
             where_clause = f"where \"useCaseId\" = 'MFMC01' \
                 and \"timeTag\" = '{requested_datetime}' limit 1"
             
             sql_query = SQL(f"DECLARE \"geo_cursor\" CURSOR FOR \
-                SELECT pid, \"useCaseName\", n, v, ST_Value({self.rast} , 1, \
-                    ST_SetSRID(ST_GeomFromText('{kwargs.get('wkt')}'), 4326)) as raster_value\
+                SELECT \
+                    pid, \
+                    \"useCaseName\", \
+                    n, \
+                    v, \
+                    ST_Value(\
+                        {self.rast}, 1, ST_SetSRID(\
+                            ST_GeomFromText('{kwargs.get('wkt')}'), 4326)) \
+                                as raster_value\
                     from {self.table} \
+                    {where_clause}")
+            
+        # Handle area queries
+        elif kwargs.get('query_type') == 'area':
+            LOGGER.error('unsupported query type!')
+            where_clause = f"where \"useCaseId\" = 'MFMC01' \
+                and \"timeTag\" = '{requested_datetime}' limit 1"
+                
+            sql_query = SQL(f"DECLARE \"geo_cursor\" CURSOR FOR \
+                with\
+                    input_polygon as (\
+                        select\
+                            ST_SetSRID(ST_GeomFromText('{kwargs.get('wkt')}'),\
+                            4326) as geom)\
+                SELECT \
+                    pid, \
+                    \"useCaseName\", \
+                    n, \
+                    v, \
+                    ST_AsGDALRaster(\
+                        ST_Clip({self.rast}, 1, geom, true),'GTiff') as rast \
+                    from {self.table}, input_polygon \
                     {where_clause}")
         else:
             LOGGER.error('unsupported query type!')
@@ -310,12 +398,11 @@ class PostGISRasterProvider(BaseProvider):
             LOGGER.debug('Start Index: {}'.format(startindex))
             LOGGER.debug('End Index: {}'.format(end_index))
             
-            # cursor.execute(sql_query)
-            # row_data = cursor.fetchall()
-            
             try:
+                LOGGER.debug('Executing cursor...')
                 cursor.execute(sql_query)
                 for index in [startindex, limit]:
+                    LOGGER.debug('fetching result...')
                     cursor.execute(f"fetch forward {index} from geo_cursor")
             except Exception as err:
                 LOGGER.error('Error executing sql_query: {}'.format(
@@ -323,8 +410,28 @@ class PostGISRasterProvider(BaseProvider):
                 LOGGER.error(err)
                 raise ProviderQueryError()
 
+            LOGGER.debug('Getting result from database...')
             row_data = cursor.fetchall()
+            LOGGER.debug(row_data)
             
+        if kwargs.get('query_type') == 'area':
+            for item in row_data:
+                rast = item['rast'].tobytes()
+                with MemoryFile(rast).open() as dataset:
+                    self._data = dataset
+                    data_array = dataset.read()
+                    out_meta = dataset.meta
+                    bbox = dataset.bounds
+                    out_meta['bbox'] = [bbox[0], bbox[1], bbox[2], bbox[3]]
+                    item['rast'] = data_array
+                    out_meta['bands'] = [0]
+                    LOGGER.debug(f'Meta: {out_meta}')
+                    LOGGER.debug(f'bbox: {bbox}')
+            
+                    return RasterioProvider.gen_covjson(
+                        self, out_meta, data_array)
+        else:
+            pass
         return row_data
     # Helper functions will be at the end 
     
