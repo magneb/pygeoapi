@@ -45,11 +45,12 @@ jobs:
         mongodb-version: 4.4
     - name: Install and run SensorThingsAPI
       run: |
-        wget https://raw.githubusercontent.com/FraunhoferIOSB/FROST-Server/master/scripts/docker-compose.yaml
+        wget https://raw.githubusercontent.com/webb-ben/data/main/docker-compose.yaml
         docker-compose up -d
     - name: Install requirements 📦
       run: |
         pip3 install -r requirements.txt
+        pip3 install -r requirements-starlette.txt
         pip3 install -r requirements-dev.txt
         pip3 install -r requirements-provider.txt
         python3 setup.py install
