@@ -29,10 +29,32 @@
 #
 # =================================================================
 
+from dataclasses import dataclass
+
 from pygeoapi.provider.postgresql import DatabaseConnection
 
 from pygeoapi.provider.base import BaseProvider, \
     ProviderConnectionError, ProviderQueryError, ProviderItemNotFoundError
+
+
+@dataclass
+class Coverage:
+    """Class for handeling a coverage as a data object.
+    A generic class that holds some basic information about a coverage 
+    such as its dimensions
+    """
+    dimension: list = ['x', 'y', 'z', 't']
+
+    def __enter__(self):
+        #go get the stuff from database?
+        pass
+
+
+@staticmethod
+class CoverageFactory():
+    """use logic and generate a coverage object...."""
+    pass
+
 
 class SWANEDRProvider(BaseProvider):
     """Special custom EDR provider for SWAN
@@ -84,7 +106,7 @@ class SWANEDRProvider(BaseProvider):
         :param query_type: query type
         :param wkt: `shapely.geometry` WKT geometry
         :param datetime_: temporal (datestamp or extent)
-        :param select_properties: list of parameters
+        :param select_properties: list of parameter names
         :param z: vertical level(s)
         :param format_: data format of output
 
