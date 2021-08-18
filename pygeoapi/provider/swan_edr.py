@@ -29,6 +29,8 @@
 #
 # =================================================================
 
+from pygeoapi.provider.postgresql import DatabaseConnection
+
 from pygeoapi.provider.base import BaseProvider, \
     ProviderConnectionError, ProviderQueryError, ProviderItemNotFoundError
 
@@ -36,4 +38,56 @@ class SWANEDRProvider(BaseProvider):
     """Special custom EDR provider for SWAN
     Space Weather for Artic Navigation
     """
-    pass
+    def __init__(self, provider_def):
+        """
+        Initialize object
+
+        :param provider_def: provider definition
+
+        :returns: pygeoapi.provider.swan_edr.SWANEDRProvider
+        """
+
+        super().__init__(provider_def)
+        self.instances = []
+
+    def get_fields(self):
+        """
+        Get provider field information (names, types)
+
+        :returns: dict of dicts of parameters
+        """
+
+        return NotImplementedError()
+
+    def get_instance(self, instance):
+        """
+        Validate instance identifier
+
+        :returns: `bool` of whether instance is valid
+        """
+
+        return NotImplementedError()
+
+    def get_query_types(self):
+        """
+        Provide supported query types
+
+        :returns: list of EDR query types
+        """
+
+        return ['position', 'area']
+
+    def query(self, **kwargs):
+        """
+        Extract data from collection collection
+
+        :param query_type: query type
+        :param wkt: `shapely.geometry` WKT geometry
+        :param datetime_: temporal (datestamp or extent)
+        :param select_properties: list of parameters
+        :param z: vertical level(s)
+        :param format_: data format of output
+
+        :returns: coverage data as dict of CoverageJSON or native format
+        """
+        pass
