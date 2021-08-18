@@ -112,3 +112,5 @@ ENV/
 
 
 .DS_Store
+pygeoapi-config.yml
+*openapi.yml
