@@ -112,7 +112,8 @@ class DatabaseConnection:
         if self.context == 'query':
             # Getting columns
             query_cols = "SELECT column_name, udt_name FROM information_schema.columns \
-            WHERE table_name = '{}' and udt_name != 'geometry';".format(
+            WHERE table_name = '{}' and udt_name != 'geometry' \
+                and udt_name != 'raster';".format(
                 self.table)
 
             self.cur.execute(query_cols)
