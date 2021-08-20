@@ -983,7 +983,7 @@ class API:
                     if parameters:
                         collection['parameter-names'] = {}
                         for f in parameters['field']:
-                            collection['parameter-names'][f['name']] = f
+                            collection['parameter-names'][f['id']] = f
 
                     for qt in p.get_query_types():
                         collection['links'].append({
