@@ -67,7 +67,7 @@ def test_query_datastreams(config):
     assert len(results['features']) == 1
     assert results['features'][0]['id'] == '9'
 
-    results = p.query(startindex=2, limit=1)
+    results = p.query(offset=2, limit=1)
     assert len(results['features']) == 1
     assert results['features'][0]['id'] == '11'
 
@@ -92,7 +92,13 @@ def test_query_observations(config):
     config['entity'] = 'Observations'
     p = SensorThingsProvider(config)
 
-    results = p.query(resulttype='hits')
+    results = p.query(limit=10, resulttype='hits')
+    assert results['numberMatched'] == 2752
+
+    r = p.query(bbox=[-109, 36, -106, 37], resulttype='hits')
+    assert r['numberMatched'] == 44
+
+    results = p.query(limit=10001, resulttype='hits')
     assert results['numberMatched'] == 2752
 
     results = p.query(properties=[('result', 7475), ])

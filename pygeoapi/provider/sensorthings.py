@@ -27,13 +27,13 @@
 #
 # =================================================================
 
-from requests import get, codes
-from requests.compat import urljoin
+from requests import Session, get, codes
 import logging
 from pygeoapi.provider.base import (BaseProvider, ProviderQueryError,
                                     ProviderConnectionError,
                                     ProviderItemNotFoundError)
-from pygeoapi.util import yaml_load
+from json.decoder import JSONDecodeError
+from pygeoapi.util import yaml_load, url_join
 
 LOGGER = logging.getLogger(__name__)
 
@@ -46,26 +46,18 @@ ENTITY = {
     }
 _EXPAND = {
     'Things': """
-        Locations,
-        Datastreams(
-            $select=@iot.id,properties
-            )
+        Locations
+        ,Datastreams
     """,
     'Observations': """
-        Datastream(
-            $select=@iot.id,properties
-            ),
-        FeatureOfInterest
+        Datastream
+        ,FeatureOfInterest
     """,
     'Datastreams': """
         Sensor
         ,ObservedProperty
-        ,Thing(
-            $select=@iot.id,properties
-            )
-        ,Thing/Locations(
-            $select=location
-            )
+        ,Thing
+        ,Thing/Locations
         ,Observations(
             $select=@iot.id;
             $orderby=phenomenonTime_desc
@@ -97,7 +89,7 @@ class SensorThingsProvider(BaseProvider):
         super().__init__(provider_def)
         try:
             self.entity = provider_def['entity']
-            self._url = ''.join((self.data, self.entity))
+            self._url = url_join(self.data, self.entity)
         except KeyError:
             raise RuntimeError('name/type/data are required')
 
@@ -124,7 +116,12 @@ class SensorThingsProvider(BaseProvider):
         if not self.fields:
             p = {'$expand': EXPAND[self.entity], '$top': 1}
             r = get(self._url, params=p)
-            results = r.json()['value'][0]
+            try:
+                results = r.json()['value'][0]
+            except JSONDecodeError as err:
+                LOGGER.error('Entity {} error: {}'.format(self.entity, err))
+                LOGGER.error('Bad url response at {}'.format(r.url))
+                raise ProviderQueryError(err)
 
             for (n, v) in results.items():
                 if isinstance(v, (int, float)) or \
@@ -135,13 +132,13 @@ class SensorThingsProvider(BaseProvider):
 
         return self.fields
 
-    def query(self, startindex=0, limit=10, resulttype='results',
+    def query(self, offset=0, limit=10, resulttype='results',
               bbox=[], datetime_=None, properties=[], sortby=[],
               select_properties=[], skip_geometry=False, q=None, **kwargs):
         """
         STA query
 
-        :param startindex: starting record to return (default 0)
+        :param offset: starting record to return (default 0)
         :param limit: number of records to return (default 10)
         :param resulttype: return results or hit limit (default results)
         :param bbox: bounding box [minx,miny,maxx,maxy]
@@ -155,7 +152,7 @@ class SensorThingsProvider(BaseProvider):
         :returns: dict of GeoJSON FeatureCollection
         """
 
-        return self._load(startindex, limit, resulttype, bbox=bbox,
+        return self._load(offset, limit, resulttype, bbox=bbox,
                           datetime_=datetime_, properties=properties,
                           sortby=sortby, select_properties=select_properties,
                           skip_geometry=skip_geometry)
@@ -182,13 +179,18 @@ class SensorThingsProvider(BaseProvider):
 
             # Validate intra-links
             for (name, rs) in CONFIG['resources'].items():
+                if not rs.get('providers') or \
+                   rs['providers'][0]['name'] != 'SensorThings':
+                    continue
+
                 _entity = rs['providers'][0].get('entity')
                 uri = rs['providers'][0].get('uri_field', '')
 
                 for p in rs['providers']:
                     # Validate linkable provider
                     if (p['name'] != 'SensorThings'
-                            or not p.get('intralink', False)):
+                            or not p.get('intralink', False)
+                            or p['data'] != self.data):
                         continue
 
                     if p.get('default', False) is True:
@@ -200,13 +202,13 @@ class SensorThingsProvider(BaseProvider):
                         'n': name, 'u': uri
                     })
 
-    def _load(self, startindex=0, limit=10, resulttype='results',
+    def _load(self, offset=0, limit=10, resulttype='results',
               identifier=None, bbox=[], datetime_=None, properties=[],
               sortby=[], select_properties=[], skip_geometry=False, q=None):
         """
         Private function: Load STA data
 
-        :param startindex: starting record to return (default 0)
+        :param offset: starting record to return (default 0)
         :param limit: number of records to return (default 10)
         :param resulttype: return results or hit limit (default results)
         :param bbox: bounding box [minx,miny,maxx,maxy]
@@ -225,43 +227,63 @@ class SensorThingsProvider(BaseProvider):
         # Make params
         params = {
             '$expand': EXPAND[self.entity],
-            '$skip': str(startindex),
-            '$top': str(limit)
+            '$skip': str(offset),
+            '$top': str(limit),
+            '$count': 'true'
         }
         if properties or bbox or datetime_:
             params['$filter'] = self._make_filter(properties, bbox, datetime_)
         if sortby:
             params['$orderby'] = self._make_orderby(sortby)
-        if resulttype == 'hits':
-            params['$count'] = 'true'
+
+        # Start session
+        s = Session()
 
         # Form URL for GET request
+        LOGGER.debug('Sending query')
         if identifier:
-            r = get(f'{self._url}({identifier})', params=params)
+            r = s.get(f'{self._url}({identifier})', params=params)
         else:
-            r = get(self._url, params=params)
+            r = s.get(self._url, params=params)
 
         if r.status_code == codes.bad:
             LOGGER.error('Bad http response code')
             raise ProviderConnectionError('Bad http response code')
+        response = r.json()
 
         # if hits, return count
         if resulttype == 'hits':
             LOGGER.debug('Returning hits')
-            feature_collection['numberMatched'] = r.json().get('@iot.count')
+            feature_collection['numberMatched'] = response.get('@iot.count')
             return feature_collection
 
-        v = [r.json(), ] if identifier else r.json().get('value')
+        # Query if values are less than expected
+        v = [response, ] if identifier else response.get('value')
+        hits_ = 1 if identifier else min(limit, response.get('@iot.count'))
+        while len(v) < hits_:
+            LOGGER.debug('Fetching next set of values')
+            next_ = response.get('@iot.nextLink', None)
+            if next_ is None:
+                break
+            else:
+                with s.get(next_) as r:
+                    response = r.json()
+                    v.extend(response.get('value'))
 
-        # properties filter & display
+        # End session
+        s.close()
+
+        # Properties filter & display
         keys = (() if not self.properties and not select_properties else
                 set(self.properties) | set(select_properties))
 
-        for entity in v:
+        for entity in v[:hits_]:
             # Make feature
+            id = entity.pop(self.id_field)
+            id = f"'{id}'" if isinstance(id, str) else str(id)
             f = {
                 'type': 'Feature', 'properties': {},
-                'geometry': None, 'id': str(entity.pop(self.id_field))
+                'geometry': None, 'id': id
             }
 
             # Make geometry
@@ -358,7 +380,7 @@ class SensorThingsProvider(BaseProvider):
         """
         try:
             if self.entity == 'Things':
-                return entity.pop('Locations')[0]['location']
+                return entity.get('Locations')[0]['location']
             elif self.entity == 'Datastreams':
                 try:
                     geo = entity['Observations'][0][
@@ -383,6 +405,14 @@ class SensorThingsProvider(BaseProvider):
 
         :returns: dict of SensorThings feature properties
         """
+        if self.entity == 'Things':
+            extra_props = entity['Locations'][0].get('properties', {})
+            entity['properties'].update(extra_props)
+        elif 'Thing' in entity.keys():
+            t = entity.get('Thing')
+            extra_props = t['Locations'][0].get('properties', {})
+            t['properties'].update(extra_props)
+
         for k, v in entity.items():
             # Create intra links
             path_ = 'collections/{}/items/{}'
@@ -396,10 +426,12 @@ class SensorThingsProvider(BaseProvider):
                         v[i] = _v['properties'][self._linkables[k]['u']]
                     continue
                 for i, _v in enumerate(v):
-                    v[i] = urljoin(
+                    id = _v[self.id_field]
+                    id = f"'{id}'" if isinstance(id, str) else str(id)
+                    v[i] = url_join(
                         self._rel_link,
                         path_.format(
-                            self._linkables[k]['n'], _v[self.id_field]
+                            self._linkables[k]['n'], id
                         )
                     )
 
@@ -407,14 +439,19 @@ class SensorThingsProvider(BaseProvider):
                 if self._linkables[ks]['u'] != '':
                     entity[k] = v['properties'][self._linkables[ks]['u']]
                     continue
-                entity[k] = urljoin(
+                id = v[self.id_field]
+                id = f"'{id}'" if isinstance(id, str) else str(id)
+                entity[k] = url_join(
                     self._rel_link,
                     path_.format(
-                        self._linkables[ks]['n'], v[self.id_field]
+                        self._linkables[ks]['n'], id
                     )
                 )
 
         # Make properties block
+        if entity.get('properties', None):
+            entity.update(entity.pop('properties'))
+
         if keys:
             ret = {}
             for k in keys:

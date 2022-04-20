@@ -83,9 +83,9 @@ class XarrayProvider(BaseProvider):
 
         c_props = self._coverage_properties
         domainset = {
-            'type': 'DomainSetType',
+            'type': 'DomainSet',
             'generalGrid': {
-                'type': 'GeneralGridCoverageType',
+                'type': 'GeneralGridCoverage',
                 'srsName': c_props['bbox_crs'],
                 'axisLabels': [
                     c_props['x_axis_label'],
@@ -93,14 +93,14 @@ class XarrayProvider(BaseProvider):
                     c_props['time_axis_label']
                 ],
                 'axis': [{
-                    'type': 'RegularAxisType',
+                    'type': 'RegularAxis',
                     'axisLabel': c_props['x_axis_label'],
                     'lowerBound': c_props['bbox'][0],
                     'upperBound': c_props['bbox'][2],
                     'uomLabel': c_props['bbox_units'],
                     'resolution': c_props['resx']
                 }, {
-                    'type': 'RegularAxisType',
+                    'type': 'RegularAxis',
                     'axisLabel': c_props['y_axis_label'],
                     'lowerBound': c_props['bbox'][1],
                     'upperBound': c_props['bbox'][3],
@@ -108,7 +108,7 @@ class XarrayProvider(BaseProvider):
                     'resolution': c_props['resy']
                 },
                     {
-                        'type': 'RegularAxisType',
+                        'type': 'RegularAxis',
                         'axisLabel': c_props['time_axis_label'],
                         'lowerBound': c_props['time_range'][0],
                         'upperBound': c_props['time_range'][1],
@@ -117,16 +117,16 @@ class XarrayProvider(BaseProvider):
                     }
                 ],
                 'gridLimits': {
-                    'type': 'GridLimitsType',
+                    'type': 'GridLimits',
                     'srsName': 'http://www.opengis.net/def/crs/OGC/0/Index2D',
                     'axisLabels': ['i', 'j'],
                     'axis': [{
-                        'type': 'IndexAxisType',
+                        'type': 'IndexAxis',
                         'axisLabel': 'i',
                         'lowerBound': 0,
                         'upperBound': c_props['width']
                     }, {
-                        'type': 'IndexAxisType',
+                        'type': 'IndexAxis',
                         'axisLabel': 'j',
                         'lowerBound': 0,
                         'upperBound': c_props['height']
@@ -148,7 +148,7 @@ class XarrayProvider(BaseProvider):
         """
 
         rangetype = {
-            'type': 'DataRecordType',
+            'type': 'DataRecord',
             'field': []
         }
 
@@ -164,9 +164,11 @@ class XarrayProvider(BaseProvider):
 
                 rangetype['field'].append({
                     'id': name,
-                    'type': 'QuantityType',
+                    'type': 'Quantity',
                     'name': var.attrs.get('long_name') or desc,
-                    'definition': str(var.dtype),
+                    'encodingInfo': {
+                        'dataType': 'http://www.opengis.net/def/dataType/OGC/0/{}'.format(str(var.dtype))  # noqa
+                    },
                     'nodata': 'null',
                     'uom': {
                         'id': 'http://www.opengis.net/def/uom/UCUM/{}'.format(
@@ -181,12 +183,12 @@ class XarrayProvider(BaseProvider):
 
         return rangetype
 
-    def query(self, range_subset=[], subsets={}, bbox=[], datetime_=None,
+    def query(self, properties=[], subsets={}, bbox=[], datetime_=None,
               format_='json', **kwargs):
         """
          Extract data from collection collection
 
-        :param range_subset: list of data variables to return (all if blank)
+        :param properties: list of data variables to return (all if blank)
         :param subsets: dict of subset names with lists of ranges
         :param bbox: bounding box [minx,miny,maxx,maxy]
         :param datetime_: temporal (datestamp or extent)
@@ -195,17 +197,17 @@ class XarrayProvider(BaseProvider):
         :returns: coverage data as dict of CoverageJSON or native format
         """
 
-        if not range_subset and not subsets and format_ != 'json':
+        if not properties and not subsets and format_ != 'json':
             LOGGER.debug('No parameters specified, returning native data')
             if format_ == 'zarr':
                 return _get_zarr_data(self._data)
             else:
                 return read_data(self.data)
 
-        if len(range_subset) < 1:
-            range_subset = self.fields
+        if len(properties) < 1:
+            properties = self.fields
 
-        data = self._data[[*range_subset]]
+        data = self._data[[*properties]]
 
         if any([self._coverage_properties['x_axis_label'] in subsets,
                 self._coverage_properties['y_axis_label'] in subsets,
@@ -231,8 +233,10 @@ class XarrayProvider(BaseProvider):
                     LOGGER.warning(msg)
                     raise ProviderQueryError(msg)
                 else:
-                    query_params['x_axis_label'] = slice(bbox[0], bbox[2])
-                    query_params['y_axis_label'] = slice(bbox[1], bbox[3])
+                    query_params[self._coverage_properties['x_axis_label']] = \
+                        slice(bbox[0], bbox[2])
+                    query_params[self._coverage_properties['y_axis_label']] = \
+                        slice(bbox[1], bbox[3])
 
             if datetime_ is not None:
                 if self._coverage_properties['time_axis_label'] in subsets:
@@ -286,7 +290,7 @@ class XarrayProvider(BaseProvider):
         LOGGER.debug('Serializing data in memory')
         if format_ == 'json':
             LOGGER.debug('Creating output in CoverageJSON')
-            return self.gen_covjson(out_meta, data, range_subset)
+            return self.gen_covjson(out_meta, data, properties)
         elif format_ == 'zarr':
             LOGGER.debug('Returning data in native zarr format')
             return _get_zarr_data(data)

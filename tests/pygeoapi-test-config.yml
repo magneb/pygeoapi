@@ -34,6 +34,7 @@ server:
     url: http://localhost:5000/
     mimetype: application/json; charset=UTF-8
     encoding: utf-8
+    gzip: false
     languages:
         # First language is the default language
         - en-US
@@ -175,7 +176,7 @@ resources:
                   name: NetCDF
                   mimetype: application/x-netcdf
 
-    lakes:
+    naturalearth/lakes:
         type: collection
         title:
             en: Large Lakes

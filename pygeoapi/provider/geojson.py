@@ -85,7 +85,7 @@ class GeoJSONProvider(BaseProvider):
                 fields[f] = {'type': 'string'}
             return fields
 
-    def _load(self, skip_geometry=None, select_properties=[]):
+    def _load(self, skip_geometry=None, properties=[], select_properties=[]):
         """Load and validate the source GeoJSON file
         at self.data
 
@@ -103,6 +103,12 @@ class GeoJSONProvider(BaseProvider):
 
         # Must be a FeatureCollection
         assert data['type'] == 'FeatureCollection'
+
+        # filter by properties if set
+        if properties:
+            data['features'] = [f for f in data['features'] if \
+                all([str(f['properties'][p[0]]) == str(p[1]) for p in properties])]  # noqa
+
         # All features must have ids, TODO must be unique strings
         for i in data['features']:
             if 'id' not in i and self.id_field in i['properties']:
@@ -114,13 +120,13 @@ class GeoJSONProvider(BaseProvider):
                                    if k in set(self.properties) | set(select_properties)}  # noqa
         return data
 
-    def query(self, startindex=0, limit=10, resulttype='results',
+    def query(self, offset=0, limit=10, resulttype='results',
               bbox=[], datetime_=None, properties=[], sortby=[],
               select_properties=[], skip_geometry=False, q=None, **kwargs):
         """
         query the provider
 
-        :param startindex: starting record to return (default 0)
+        :param offset: starting record to return (default 0)
         :param limit: number of records to return (default 10)
         :param resulttype: return results or hit limit (default results)
         :param bbox: bounding box [minx,miny,maxx,maxy]
@@ -135,7 +141,7 @@ class GeoJSONProvider(BaseProvider):
         """
 
         # TODO filter by bbox without resorting to third-party libs
-        data = self._load(skip_geometry=skip_geometry,
+        data = self._load(skip_geometry=skip_geometry, properties=properties,
                           select_properties=select_properties)
 
         data['numberMatched'] = len(data['features'])
@@ -143,7 +149,7 @@ class GeoJSONProvider(BaseProvider):
         if resulttype == 'hits':
             data['features'] = []
         else:
-            data['features'] = data['features'][startindex:startindex+limit]
+            data['features'] = data['features'][offset:offset+limit]
             data['numberReturned'] = len(data['features'])
 
         return data

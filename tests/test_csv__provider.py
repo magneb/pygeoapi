@@ -73,7 +73,7 @@ def test_query(config):
     assert len(results['features']) == 1
     assert results['features'][0]['id'] == '371'
 
-    results = p.query(startindex=2, limit=1)
+    results = p.query(offset=2, limit=1)
     assert len(results['features']) == 1
     assert results['features'][0]['id'] == '238'
 
@@ -87,6 +87,14 @@ def test_query(config):
 
     results = p.query(skip_geometry=True)
     assert results['features'][0]['geometry'] is None
+
+    results = p.query(properties=[('stn_id', '35')])
+    assert len(results['features']) == 2
+    assert results['numberMatched'] == 2
+    assert results['numberReturned'] == 2
+
+    results = p.query(properties=[('stn_id', '35'), ('value', '93.9')])
+    assert len(results['features']) == 1
 
     config['properties'] = ['value', 'stn_id']
     p = CSVProvider(config)

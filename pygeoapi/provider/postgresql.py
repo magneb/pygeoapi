@@ -60,7 +60,7 @@ class DatabaseConnection:
      The class returns a connection object.
     """
 
-    def __init__(self, conn_dic, table, context="query"):
+    def __init__(self, conn_dic, table, properties=[], context="query"):
         """
         PostgreSQLProvider Class constructor returning
 
@@ -81,15 +81,17 @@ class DatabaseConnection:
 
         :param table: table name containing the data. This variable is used to
                 assemble column information
+        :param properties: User-specified subset of column names to expose
         :param context: query or hits, if query then it will determine
                 table column otherwise will not do it
-        :returns: psycopg2.extensions.connection
+        :returns: DatabaseConnection
         """
 
         self.conn_dic = conn_dic
         self.table = table
         self.context = context
         self.columns = None
+        self.properties = properties
         self.fields = {}  # Dict of columns. Key is col name, value is type
         self.conn = None
 
@@ -110,13 +112,26 @@ class DatabaseConnection:
 
         self.cur = self.conn.cursor()
         if self.context == 'query':
-            # Getting columns
-            query_cols = "SELECT column_name, udt_name FROM information_schema.columns \
-            WHERE table_name = '{}' and udt_name != 'geometry';".format(
+            # Get table column names and types, excluding geometry and
+            # transaction ID columns
+            query_cols = "SELECT attr.attname, tp.typname \
+            FROM pg_catalog.pg_class as cls \
+            INNER JOIN pg_catalog.pg_attribute as attr \
+                ON cls.oid = attr.attrelid \
+            INNER JOIN pg_catalog.pg_type as tp \
+                ON tp.oid = attr.atttypid \
+            WHERE cls.relname = '{}' \
+                AND tp.typname != 'geometry' \
+                AND tp.typname != 'cid' \
+                AND tp.typname != 'oid' \
+                AND tp.typname != 'tid' \
+                AND tp.typname != 'xid';".format(
                 self.table)
 
             self.cur.execute(query_cols)
             result = self.cur.fetchall()
+            if self.properties:
+                result = [res for res in result if res[0] in self.properties]
             self.columns = SQL(', ').join(
                 [Identifier(item[0]) for item in result]
                 )
@@ -173,7 +188,9 @@ class PostgreSQLProvider(BaseProvider):
         :returns: dict of fields
         """
         if not self.fields:
-            with DatabaseConnection(self.conn_dic, self.table) as db:
+            with DatabaseConnection(self.conn_dic,
+                                    self.table,
+                                    properties=self.properties) as db:
                 self.fields = db.fields
         return self.fields
 
@@ -206,7 +223,21 @@ class PostgreSQLProvider(BaseProvider):
 
         return where_clause
 
-    def query(self, startindex=0, limit=10, resulttype='results',
+    def _make_orderby(self, sortby):
+        """
+        Private function: Make STA filter from query properties
+
+        :param sortby: list of dicts (property, order)
+
+        :returns: STA $orderby string
+        """
+        ret = []
+        _map = {'+': 'ASC', '-': 'DESC'}
+        for _ in sortby:
+            ret.append(f"{_['property']} {_map[_['order']]}")
+        return SQL(f"ORDER BY {','.join(ret)}")
+
+    def query(self, offset=0, limit=10, resulttype='results',
               bbox=[], datetime_=None, properties=[], sortby=[],
               select_properties=[], skip_geometry=False, q=None, **kwargs):
         """
@@ -214,7 +245,7 @@ class PostgreSQLProvider(BaseProvider):
         e,g: http://localhost:5000/collections/hotosm_bdi_waterways/items?
         limit=1&resulttype=results
 
-        :param startindex: starting record to return (default 0)
+        :param offset: starting record to return (default 0)
         :param limit: number of records to return (default 10)
         :param resulttype: return results or hit limit (default results)
         :param bbox: bounding box [minx,miny,maxx,maxy]
@@ -232,7 +263,9 @@ class PostgreSQLProvider(BaseProvider):
         if resulttype == 'hits':
 
             with DatabaseConnection(self.conn_dic,
-                                    self.table, context="hits") as db:
+                                    self.table,
+                                    properties=self.properties,
+                                    context="hits") as db:
                 cursor = db.conn.cursor(cursor_factory=RealDictCursor)
 
                 where_clause = self.__get_where_clauses(
@@ -250,27 +283,38 @@ class PostgreSQLProvider(BaseProvider):
 
             return self.__response_feature_hits(hits)
 
-        end_index = startindex + limit
+        end_index = offset + limit
 
-        with DatabaseConnection(self.conn_dic, self.table) as db:
+        with DatabaseConnection(self.conn_dic,
+                                self.table,
+                                properties=self.properties) as db:
             cursor = db.conn.cursor(cursor_factory=RealDictCursor)
+
+            props = db.columns if select_properties == [] else \
+                SQL(', ').join([Identifier(p) for p in select_properties])
+
+            geom = SQL('') if skip_geometry else \
+                SQL(",ST_AsGeoJSON({})").format(Identifier(self.geom))
 
             where_clause = self.__get_where_clauses(
                 properties=properties, bbox=bbox)
 
+            orderby = self._make_orderby(sortby) if sortby else SQL('')
+
             sql_query = SQL("DECLARE \"geo_cursor\" CURSOR FOR \
-             SELECT DISTINCT {},ST_AsGeoJSON({}) FROM {}{}").\
-                format(db.columns,
-                       Identifier(self.geom),
+             SELECT DISTINCT {} {} FROM {} {} {}").\
+                format(props,
+                       geom,
                        Identifier(self.table),
-                       where_clause)
+                       where_clause,
+                       orderby)
 
             LOGGER.debug('SQL Query: {}'.format(sql_query.as_string(cursor)))
-            LOGGER.debug('Start Index: {}'.format(startindex))
+            LOGGER.debug('Start Index: {}'.format(offset))
             LOGGER.debug('End Index: {}'.format(end_index))
             try:
                 cursor.execute(sql_query)
-                for index in [startindex, limit]:
+                for index in [offset, limit]:
                     cursor.execute("fetch forward {} from geo_cursor"
                                    .format(index))
             except Exception as err:
@@ -341,7 +385,9 @@ class PostgreSQLProvider(BaseProvider):
         """
 
         LOGGER.debug('Get item from Postgis')
-        with DatabaseConnection(self.conn_dic, self.table) as db:
+        with DatabaseConnection(self.conn_dic,
+                                self.table,
+                                properties=self.properties) as db:
             cursor = db.conn.cursor(cursor_factory=RealDictCursor)
 
             sql_query = SQL("SELECT {},ST_AsGeoJSON({}) \
@@ -390,7 +436,7 @@ class PostgreSQLProvider(BaseProvider):
                 'type': 'Feature'
             }
 
-            geom = rd.pop('st_asgeojson')
+            geom = rd.pop('st_asgeojson') if rd.get('st_asgeojson') else None
 
             feature['geometry'] = json.loads(geom) if geom is not None else None  # noqa
 

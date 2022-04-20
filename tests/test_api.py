@@ -2,7 +2,7 @@
 #
 # Authors: Tom Kralidis <tomkralidis@gmail.com>
 #
-# Copyright (c) 2021 Tom Kralidis
+# Copyright (c) 2022 Tom Kralidis
 #
 # Permission is hereby granted, free of charge, to any person
 # obtaining a copy of this software and associated documentation
@@ -30,12 +30,13 @@
 import json
 import logging
 import time
+import gzip
 
 from pyld import jsonld
 import pytest
 from pygeoapi.api import (
     API, APIRequest, FORMAT_TYPES, validate_bbox, validate_datetime,
-    F_HTML, F_JSON, F_JSONLD
+    validate_subset, F_HTML, F_JSON, F_JSONLD, F_GZIP
 )
 from pygeoapi.util import yaml_load
 
@@ -114,6 +115,17 @@ def test_apirequest(api_):
            FORMAT_TYPES[F_HTML]
     assert apireq.get_linkrel(F_HTML) == 'self'
     assert apireq.get_linkrel(F_JSON) == 'alternate'
+
+    # Test accept header with multiple valid formats
+    hh = 'plain/text,application/ld+json,application/json;q=0.9,'
+    req = mock_request(HTTP_ACCEPT=hh)
+    apireq = APIRequest(req, api_.locales)
+    assert apireq.is_valid()
+    assert apireq.format == F_JSONLD
+    assert apireq.get_response_headers()['Content-Type'] == \
+           FORMAT_TYPES[F_JSONLD]
+    assert apireq.get_linkrel(F_JSONLD) == 'self'
+    assert apireq.get_linkrel(F_HTML) == 'alternate'
 
     # Overrule HTTP content negotiation
     req = mock_request({'f': 'html'}, HTTP_ACCEPT='application/json')  # noqa
@@ -223,6 +235,8 @@ def test_api(config, api_, openapi):
     assert rsp_headers['Content-Language'] == 'en-US'
     assert code == 400
 
+    assert api_.get_collections_url() == 'http://localhost:5000/collections'
+
 
 def test_api_exception(config, api_):
     req = mock_request({'f': 'foo'})
@@ -235,6 +249,101 @@ def test_api_exception(config, api_):
     rsp_headers, code, response = api_.landing_page(req)
     assert rsp_headers['Content-Language'] == 'en-US'
     assert code == 400
+
+
+def test_gzip(config, api_):
+    # Requests for each response type and gzip encoding
+    req_gzip_json = mock_request(HTTP_ACCEPT=FORMAT_TYPES[F_JSON],
+                                 HTTP_ACCEPT_ENCODING=F_GZIP)
+    req_gzip_jsonld = mock_request(HTTP_ACCEPT=FORMAT_TYPES[F_JSONLD],
+                                   HTTP_ACCEPT_ENCODING=F_GZIP)
+    req_gzip_html = mock_request(HTTP_ACCEPT=FORMAT_TYPES[F_HTML],
+                                 HTTP_ACCEPT_ENCODING=F_GZIP)
+    req_gzip_gzip = mock_request(HTTP_ACCEPT='application/gzip',
+                                 HTTP_ACCEPT_ENCODING=F_GZIP)
+
+    # Responses from server config without gzip compression
+    rsp_headers, _, rsp_json = api_.landing_page(req_gzip_json)
+    assert rsp_headers['Content-Type'] == FORMAT_TYPES[F_JSON]
+    rsp_headers, _, rsp_jsonld = api_.landing_page(req_gzip_jsonld)
+    assert rsp_headers['Content-Type'] == FORMAT_TYPES[F_JSONLD]
+    rsp_headers, _, rsp_html = api_.landing_page(req_gzip_html)
+    assert rsp_headers['Content-Type'] == FORMAT_TYPES[F_HTML]
+    rsp_headers, _, _ = api_.landing_page(req_gzip_gzip)
+    assert rsp_headers['Content-Type'] == FORMAT_TYPES[F_JSON]
+
+    # Add gzip to server and use utf-16 encoding
+    config['server']['gzip'] = True
+    enc_16 = 'utf-16'
+    config['server']['encoding'] = enc_16
+    api_ = API(config)
+
+    # Responses from server with gzip compression
+    rsp_json_headers, _, rsp_gzip_json = api_.landing_page(req_gzip_json)
+    rsp_jsonld_headers, _, rsp_gzip_jsonld = api_.landing_page(req_gzip_jsonld)
+    rsp_html_headers, _, rsp_gzip_html = api_.landing_page(req_gzip_html)
+    rsp_gzip_headers, _, rsp_gzip_gzip = api_.landing_page(req_gzip_gzip)
+
+    # Validate compressed json response
+    assert rsp_json_headers['Content-Type'] == \
+        f'{FORMAT_TYPES[F_JSON]}; charset={enc_16}'
+    assert rsp_json_headers['Content-Encoding'] == F_GZIP
+
+    parsed_gzip_json = gzip.decompress(rsp_gzip_json).decode(enc_16)
+    assert isinstance(parsed_gzip_json, str)
+    parsed_gzip_json = json.loads(parsed_gzip_json)
+    assert isinstance(parsed_gzip_json, dict)
+    assert parsed_gzip_json == json.loads(rsp_json)
+
+    # Validate compressed jsonld response
+    assert rsp_jsonld_headers['Content-Type'] == \
+        f'{FORMAT_TYPES[F_JSONLD]}; charset={enc_16}'
+    assert rsp_jsonld_headers['Content-Encoding'] == F_GZIP
+
+    parsed_gzip_jsonld = gzip.decompress(rsp_gzip_jsonld).decode(enc_16)
+    assert isinstance(parsed_gzip_jsonld, str)
+    parsed_gzip_jsonld = json.loads(parsed_gzip_jsonld)
+    assert isinstance(parsed_gzip_jsonld, dict)
+    assert parsed_gzip_jsonld == json.loads(rsp_jsonld)
+
+    # Validate compressed html response
+    assert rsp_html_headers['Content-Type'] == \
+        f'{FORMAT_TYPES[F_HTML]}; charset={enc_16}'
+    assert rsp_html_headers['Content-Encoding'] == F_GZIP
+
+    parsed_gzip_html = gzip.decompress(rsp_gzip_html).decode(enc_16)
+    assert isinstance(parsed_gzip_html, str)
+    assert parsed_gzip_html == rsp_html
+
+    # Validate compressed gzip response
+    assert rsp_gzip_headers['Content-Type'] == \
+        f'{FORMAT_TYPES[F_GZIP]}; charset={enc_16}'
+    assert rsp_gzip_headers['Content-Encoding'] == F_GZIP
+
+    parsed_gzip_gzip = gzip.decompress(rsp_gzip_gzip).decode(enc_16)
+    assert isinstance(parsed_gzip_gzip, str)
+    parsed_gzip_gzip = json.loads(parsed_gzip_gzip)
+    assert isinstance(parsed_gzip_gzip, dict)
+
+    # Requests without content encoding header
+    req_json = mock_request(HTTP_ACCEPT=FORMAT_TYPES[F_JSON])
+    req_jsonld = mock_request(HTTP_ACCEPT=FORMAT_TYPES[F_JSONLD])
+    req_html = mock_request(HTTP_ACCEPT=FORMAT_TYPES[F_HTML])
+
+    # Responses without content encoding
+    _, _, rsp_json_ = api_.landing_page(req_json)
+    _, _, rsp_jsonld_ = api_.landing_page(req_jsonld)
+    _, _, rsp_html_ = api_.landing_page(req_html)
+
+    # Confirm each request is the same when decompressed
+    assert rsp_json_ == rsp_json == \
+        gzip.decompress(rsp_gzip_json).decode(enc_16)
+
+    assert rsp_jsonld_ == rsp_jsonld == \
+        gzip.decompress(rsp_gzip_jsonld).decode(enc_16)
+
+    assert rsp_html_ == rsp_html == \
+        gzip.decompress(rsp_gzip_html).decode(enc_16)
 
 
 def test_root(config, api_):
@@ -256,7 +365,7 @@ def test_root(config, api_):
                for link in root['links'])
     assert any(link['href'].endswith('f=html') and link['rel'] == 'alternate'
                for link in root['links'])
-    assert len(root['links']) == 7
+    assert len(root['links']) == 9
     assert 'title' in root
     assert root['title'] == 'pygeoapi default instance'
     assert 'description' in root
@@ -306,7 +415,7 @@ def test_conformance(config, api_):
 
     assert isinstance(root, dict)
     assert 'conformsTo' in root
-    assert len(root['conformsTo']) == 21
+    assert len(root['conformsTo']) == 20
 
     req = mock_request({'f': 'foo'})
     rsp_headers, code, response = api_.conformance(req)
@@ -384,6 +493,12 @@ def test_describe_collections(config, api_):
     assert collection['id'] == 'gdps-temperature'
     assert len(collection['links']) == 12
 
+    # hiearchical collections
+    rsp_headers, code, response = api_.describe_collections(
+        req, 'naturalearth/lakes')
+    collection = json.loads(response)
+    assert collection['id'] == 'naturalearth/lakes'
+
 
 def test_get_collection_queryables(config, api_):
     req = mock_request()
@@ -400,7 +515,7 @@ def test_get_collection_queryables(config, api_):
     queryables = json.loads(response)
 
     assert 'properties' in queryables
-    assert len(queryables['properties']) == 6
+    assert len(queryables['properties']) == 7
 
     # test with provider filtered properties
     api_.config['resources']['obs']['providers'][0]['properties'] = ['stn_id']
@@ -409,7 +524,10 @@ def test_get_collection_queryables(config, api_):
     queryables = json.loads(response)
 
     assert 'properties' in queryables
-    assert len(queryables['properties']) == 1
+    assert len(queryables['properties']) == 2
+    assert 'geometry' in queryables['properties']
+    assert queryables['properties']['geometry']['$ref'] == 'https://geojson.org/schema/Geometry.json'  # noqa
+
     # No language requested: should be set to default from YAML
     assert rsp_headers['Content-Language'] == 'en-US'
 
@@ -498,6 +616,20 @@ def test_get_collection_items(config, api_):
 
     assert code == 400
 
+    req = mock_request({'stn_id': '35'})
+    rsp_headers, code, response = api_.get_collection_items(req, 'obs')
+    features = json.loads(response)
+
+    assert len(features['features']) == 2
+    assert features['numberMatched'] == 2
+
+    req = mock_request({'stn_id': '35', 'value': '93.9'})
+    rsp_headers, code, response = api_.get_collection_items(req, 'obs')
+    features = json.loads(response)
+
+    assert len(features['features']) == 1
+    assert features['numberMatched'] == 1
+
     req = mock_request({'limit': 2})
     rsp_headers, code, response = api_.get_collection_items(req, 'obs')
     features = json.loads(response)
@@ -513,19 +645,19 @@ def test_get_collection_items(config, api_):
     assert links[1]['rel'] == 'alternate'
     assert '/collections/obs/items?f=html' in links[2]['href']
     assert links[2]['rel'] == 'alternate'
-    assert '/collections/obs/items?startindex=2&limit=2' in links[3]['href']
+    assert '/collections/obs/items?offset=2&limit=2' in links[3]['href']
     assert links[3]['rel'] == 'next'
     assert '/collections/obs' in links[4]['href']
     assert links[4]['rel'] == 'collection'
 
-    # Invalid startindex
-    req = mock_request({'startindex': -1})
+    # Invalid offset
+    req = mock_request({'offset': -1})
     rsp_headers, code, response = api_.get_collection_items(req, 'obs')
     features = json.loads(response)
 
     assert code == 400
 
-    req = mock_request({'startindex': 2})
+    req = mock_request({'offset': 2})
     rsp_headers, code, response = api_.get_collection_items(req, 'obs')
     features = json.loads(response)
 
@@ -540,13 +672,13 @@ def test_get_collection_items(config, api_):
     assert links[1]['rel'] == 'alternate'
     assert '/collections/obs/items?f=html' in links[2]['href']
     assert links[2]['rel'] == 'alternate'
-    assert '/collections/obs/items?startindex=0' in links[3]['href']
+    assert '/collections/obs/items?offset=0' in links[3]['href']
     assert links[3]['rel'] == 'prev'
     assert '/collections/obs' in links[4]['href']
     assert links[4]['rel'] == 'collection'
 
     req = mock_request({
-        'startindex': 1,
+        'offset': 1,
         'limit': 1,
         'bbox': '-180,90,180,90'
     })
@@ -566,10 +698,10 @@ def test_get_collection_items(config, api_):
     assert '/collections/obs/items?f=html&limit=1&bbox=-180,90,180,90' in \
         links[2]['href']
     assert links[2]['rel'] == 'alternate'
-    assert '/collections/obs/items?startindex=0&limit=1&bbox=-180,90,180,90' \
+    assert '/collections/obs/items?offset=0&limit=1&bbox=-180,90,180,90' \
         in links[3]['href']
     assert links[3]['rel'] == 'prev'
-    assert '/collections/obs/items?startindex=2&limit=1&bbox=-180,90,180,90' \
+    assert '/collections/obs/items?offset=2&limit=1&bbox=-180,90,180,90' \
         in links[4]['href']
     assert links[4]['rel'] == 'next'
     assert '/collections/obs' in links[5]['href']
@@ -650,8 +782,18 @@ def test_get_collection_items(config, api_):
 
     assert code == 200
 
+    req = mock_request({'scalerank': 1})
+    rsp_headers, code, response = api_.get_collection_items(
+        req, 'naturalearth/lakes')
+    features = json.loads(response)
+
+    assert len(features['features']) == 10
+    assert features['numberMatched'] == 11
+    assert features['numberReturned'] == 10
+
     req = mock_request({'datetime': '2005-04-22'})
-    rsp_headers, code, response = api_.get_collection_items(req, 'lakes')
+    rsp_headers, code, response = api_.get_collection_items(
+        req, 'naturalearth/lakes')
 
     assert code == 400
 
@@ -721,6 +863,8 @@ def test_get_collection_item(config, api_):
     feature = json.loads(response)
 
     assert feature['properties']['stn_id'] == '35'
+    assert 'prev' not in feature['links']
+    assert 'next' not in feature['links']
 
 
 def test_get_collection_item_json_ld(config, api_):
@@ -823,7 +967,7 @@ def test_get_coverage_domainset(config, api_):
 
     domainset = json.loads(response)
 
-    assert domainset['type'] == 'DomainSetType'
+    assert domainset['type'] == 'DomainSet'
     assert domainset['generalGrid']['axisLabels'] == ['Long', 'Lat']
     assert domainset['generalGrid']['gridLimits']['axisLabels'] == ['i', 'j']
     assert domainset['generalGrid']['gridLimits']['axis'][0]['upperBound'] == 2400  # noqa
@@ -842,7 +986,7 @@ def test_get_collection_coverage_rangetype(config, api_):
 
     rangetype = json.loads(response)
 
-    assert rangetype['type'] == 'DataRecordType'
+    assert rangetype['type'] == 'DataRecord'
     assert len(rangetype['field']) == 1
     assert rangetype['field'][0]['id'] == 1
     assert rangetype['field'][0]['name'] == 'Temperature [C]'
@@ -856,7 +1000,7 @@ def test_get_collection_coverage(config, api_):
 
     assert code == 400
 
-    req = mock_request({'rangeSubset': '12'})
+    req = mock_request({'properties': '12'})
     rsp_headers, code, response = api_.get_collection_coverage(
         req, 'gdps-temperature')
 
@@ -947,12 +1091,14 @@ def test_get_collection_tiles(config, api_):
     rsp_headers, code, response = api_.get_collection_tiles(req, 'obs')
     assert code == 400
 
-    rsp_headers, code, response = api_.get_collection_tiles(req, 'lakes')
+    rsp_headers, code, response = api_.get_collection_tiles(
+        req, 'naturalearth/lakes')
     assert code == 200
 
     # Language settings should be ignored (return system default)
     req = mock_request({'lang': 'fr'})
-    rsp_headers, code, response = api_.get_collection_tiles(req, 'lakes')
+    rsp_headers, code, response = api_.get_collection_tiles(
+        req, 'naturalearth/lakes')
     assert rsp_headers['Content-Language'] == 'en-US'
     content = json.loads(response)
     assert content['description'] == 'lakes of the world, public domain'
@@ -982,7 +1128,7 @@ def test_describe_processes(config, api_):
     assert process['version'] == '0.2.0'
     assert process['title'] == 'Hello World'
     assert len(process['keywords']) == 3
-    assert len(process['links']) == 3
+    assert len(process['links']) == 6
     assert len(process['inputs']) == 2
     assert len(process['outputs']) == 1
     assert len(process['outputTransmission']) == 1
@@ -1214,15 +1360,13 @@ def test_execute_process(config, api_):
 
     # Cleanup
     time.sleep(2)  # Allow time for any outstanding async jobs
-    for process_id, job_id in cleanup_jobs:
-        rsp_headers, code, response = api_.delete_process_job(
-            process_id, job_id)
+    for _, job_id in cleanup_jobs:
+        rsp_headers, code, response = api_.delete_job(job_id)
         assert code == 200
 
 
-def test_delete_process_job(api_):
-    rsp_headers, code, response = api_.delete_process_job(
-        'does-not-exist', 'does-not-exist')
+def test_delete_job(api_):
+    rsp_headers, code, response = api_.delete_job('does-not-exist')
 
     assert code == 404
 
@@ -1249,13 +1393,11 @@ def test_delete_process_job(api_):
     assert data['value'] == 'Hello Sync Test Deletion!'
 
     job_id = rsp_headers['Location'].split('/')[-1]
-    rsp_headers, code, response = api_.delete_process_job(
-        'hello-world', job_id)
+    rsp_headers, code, response = api_.delete_job(job_id)
 
     assert code == 200
 
-    rsp_headers, code, response = api_.delete_process_job(
-        'hello-world', job_id)
+    rsp_headers, code, response = api_.delete_job(job_id)
     assert code == 404
 
     req = mock_request(data=req_body_async)
@@ -1267,12 +1409,10 @@ def test_delete_process_job(api_):
 
     time.sleep(2)  # Allow time for async execution to complete
     job_id = rsp_headers['Location'].split('/')[-1]
-    rsp_headers, code, response = api_.delete_process_job(
-        'hello-world', job_id)
+    rsp_headers, code, response = api_.delete_job(job_id)
     assert code == 200
 
-    rsp_headers, code, response = api_.delete_process_job(
-        'hello-world', job_id)
+    rsp_headers, code, response = api_.delete_job(job_id)
     assert code == 404
 
 
@@ -1370,6 +1510,9 @@ def test_validate_bbox():
     assert (validate_bbox('-142.1,42.12,-52.22,84.4') ==
             [-142.1, 42.12, -52.22, 84.4])
 
+    assert (validate_bbox('177.0,65.0,-177.0,70.0') ==
+            [177.0, 65.0, -177.0, 70.0])
+
     with pytest.raises(ValueError):
         validate_bbox('1,2,4')
 
@@ -1419,6 +1562,23 @@ def test_validate_datetime():
         _ = validate_datetime(config, '../2000-09')
     with pytest.raises(ValueError):
         _ = validate_datetime(config, '../1999')
+
+
+@pytest.mark.parametrize("value, expected", [
+    ('time(2000-11-11)', {'time': ['2000-11-11']}),
+    ('time("2000-11-11")', {'time': ['2000-11-11']}),
+    ('time("2000-11-11T00:11:11")', {'time': ['2000-11-11T00:11:11']}),
+    ('time("2000-11-11T11:12:13":"2021-12-22T:13:33:33")', {'time': ['2000-11-11T11:12:13', '2021-12-22T:13:33:33']}),  # noqa
+    ('lat(40)', {'lat': [40]}),
+    ('lat(0:40)', {'lat': [0, 40]}),
+    ('foo("bar")', {'foo': ['bar']}),
+    ('foo("bar":"baz")', {'foo': ['bar', 'baz']})
+])
+def test_validate_subset(value, expected):
+    assert validate_subset(value) == expected
+
+    with pytest.raises(ValueError):
+        validate_subset('foo("bar)')
 
 
 def test_get_exception(config, api_):

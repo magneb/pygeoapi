@@ -150,7 +150,8 @@ def test_query(config):
     fields = p.get_fields()
     assert len(fields) == 37
     assert fields['scalerank']['type'] == 'long'
-    assert fields['changed']['type'] == 'float'
+    assert fields['changed']['type'] == 'number'
+    assert fields['changed']['format'] == 'float'
     assert fields['ls_name']['type'] == 'string'
 
     results = p.query()
@@ -161,17 +162,17 @@ def test_query(config):
     assert results['features'][0]['properties']['nameascii'] == 'Vatican City'
 
     results = p.query(properties=[('nameascii', 'Vatican City')])
-    assert len(results['features']) == 4
-    assert results['numberMatched'] == 4
-    assert results['numberReturned'] == 4
+    assert len(results['features']) == 1
+    assert results['numberMatched'] == 1
+    assert results['numberReturned'] == 1
 
     results = p.query(limit=1)
     assert len(results['features']) == 1
     assert results['features'][0]['id'] == 6691831
 
-    results = p.query(startindex=2, limit=1)
+    results = p.query(offset=2, limit=1)
     assert len(results['features']) == 1
-    assert results['features'][0]['id'] == 3168070
+    assert results['features'][0]['id'] == 3042030
 
     results = p.query(sortby=[{'property': 'nameascii', 'order': '+'}])
     assert results['features'][0]['properties']['nameascii'] == 'Abidjan'
@@ -195,10 +196,10 @@ def test_query(config):
     assert results['numberReturned'] == 242
 
     results = p.query(select_properties=['nameascii'])
-    assert len(results['features'][0]['properties']) == 2
+    assert len(results['features'][0]['properties']) == 1
 
     results = p.query(select_properties=['nameascii', 'scalerank'])
-    assert len(results['features'][0]['properties']) == 3
+    assert len(results['features'][0]['properties']) == 2
 
     results = p.query(skip_geometry=True)
     assert results['features'][0]['geometry'] is None

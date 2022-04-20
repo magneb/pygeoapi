@@ -4,7 +4,7 @@
 #          Tom Kralidis <tomkralidis@gmail.com>
 #
 # Copyright (c) 2020 Francesco Bartoli
-# Copyright (c) 2020 Tom Kralidis
+# Copyright (c) 2022 Tom Kralidis
 #
 # Permission is hereby granted, free of charge, to any person
 # obtaining a copy of this software and associated documentation
@@ -139,8 +139,8 @@ async def conformance(request: Request):
 
 @app.route('/collections')
 @app.route('/collections/')
-@app.route('/collections/{collection_id}')
-@app.route('/collections/{collection_id}/')
+@app.route('/collections/{path:collection_id}')
+@app.route('/collections/{path:collection_id}/')
 async def collections(request: Request, collection_id=None):
     """
     OGC API collections endpoint
@@ -155,8 +155,8 @@ async def collections(request: Request, collection_id=None):
     return get_response(api_.describe_collections(request, collection_id))
 
 
-@app.route('/collections/{collection_id}/queryables')
-@app.route('/collections/{collection_id}/queryables/')
+@app.route('/collections/{path:collection_id}/queryables')
+@app.route('/collections/{path:collection_id}/queryables/')
 async def collection_queryables(request: Request, collection_id=None):
     """
     OGC API collections queryables endpoint
@@ -220,10 +220,10 @@ async def get_collection_items_tiles(request: Request, name=None,
         request, name, tileMatrixSetId, tile_matrix, tileRow, tileCol))
 
 
-@app.route('/collections/{collection_id}/items', methods=['GET', 'POST'])
-@app.route('/collections/{collection_id}/items/', methods=['GET', 'POST'])
-@app.route('/collections/{collection_id}/items/{item_id}')
-@app.route('/collections/{collection_id}/items/{item_id}/')
+@app.route('/collections/{path:collection_id}/items', methods=['GET', 'POST'])
+@app.route('/collections/{path:collection_id}/items/', methods=['GET', 'POST'])
+@app.route('/collections/{path:collection_id}/items/{item_id}')
+@app.route('/collections/{path:collection_id}/items/{item_id}/')
 async def collection_items(request: Request, collection_id=None, item_id=None):
     """
     OGC API collections items endpoint
@@ -252,8 +252,8 @@ async def collection_items(request: Request, collection_id=None, item_id=None):
             request, collection_id, item_id))
 
 
-@app.route('/collections/{collection_id}/coverage')
-async def collection_coverage(request: Request, collection_id):
+@app.route('/collections/{path:collection_id}/coverage')
+async def collection_coverage(request: Request, collection_id=None):
     """
     OGC API - Coverages coverage endpoint
 
@@ -268,8 +268,8 @@ async def collection_coverage(request: Request, collection_id):
     return get_response(api_.get_collection_coverage(request, collection_id))
 
 
-@app.route('/collections/{collection_id}/coverage/domainset')
-async def collection_coverage_domainset(request: Request, collection_id):
+@app.route('/collections/{path:collection_id}/coverage/domainset')
+async def collection_coverage_domainset(request: Request, collection_id=None):
     """
     OGC API - Coverages coverage domainset endpoint
 
@@ -285,8 +285,8 @@ async def collection_coverage_domainset(request: Request, collection_id):
         request, collection_id))
 
 
-@app.route('/collections/{collection_id}/coverage/rangetype')
-async def collection_coverage_rangetype(request: Request, collection_id):
+@app.route('/collections/{path:collection_id}/coverage/rangetype')
+async def collection_coverage_rangetype(request: Request, collection_id=None):
     """
     OGC API - Coverages coverage rangetype endpoint
 
@@ -304,8 +304,8 @@ async def collection_coverage_rangetype(request: Request, collection_id):
 
 @app.route('/processes')
 @app.route('/processes/')
-@app.route('/processes/{process_id}')
-@app.route('/processes/{process_id}/')
+@app.route('/processes/{path:process_id}')
+@app.route('/processes/{path:process_id}/')
 async def get_processes(request: Request, process_id=None):
     """
     OGC API - Processes description endpoint
@@ -321,38 +321,34 @@ async def get_processes(request: Request, process_id=None):
     return get_response(api_.describe_processes(request, process_id))
 
 
-@app.route('/processes/{process_id}/jobs')
-@app.route('/processes/{process_id}/jobs/{job_id}', methods=['GET', 'DELETE'])
-@app.route('/processes/{process_id}/jobs/{job_id}/', methods=['GET', 'DELETE'])
-async def get_process_jobs(request: Request, process_id=None, job_id=None):
+@app.route('/jobs')
+@app.route('/jobs/{job_id}', methods=['GET', 'DELETE'])
+@app.route('/jobs/{job_id}/', methods=['GET', 'DELETE'])
+async def get_jobs(request: Request, job_id=None):
     """
     OGC API - Processes jobs endpoint
 
     :param request: Starlette Request instance
-    :param process_id: process identifier
     :param job_id: job identifier
 
     :returns: Starlette HTTP Response
     """
 
-    if 'process_id' in request.path_params:
-        process_id = request.path_params['process_id']
     if 'job_id' in request.path_params:
         job_id = request.path_params['job_id']
 
     if job_id is None:  # list of submit job
-        return get_response(api_.get_process_jobs(request, process_id))
+        return get_response(api_.get_jobs(request))
     else:  # get or delete job
         if request.method == 'DELETE':
-            return get_response(api_.delete_process_job(process_id, job_id))
+            return get_response(api_.delete_job(job_id))
         else:  # Return status of a specific job
-            return get_response(api_.get_process_jobs(
-                request, process_id, job_id))
+            return get_response(api_.get_jobs(request, job_id))
 
 
-@app.route('/processes/{process_id}/execution', methods=['POST'])
-@app.route('/processes/{process_id}/execution/', methods=['POST'])
-async def execute_process_jobs(request: Request, process_id):
+@app.route('/processes/{path:process_id}/execution', methods=['POST'])
+@app.route('/processes/{path:process_id}/execution/', methods=['POST'])
+async def execute_process_jobs(request: Request, process_id=None):
     """
     OGC API - Processes jobs endpoint
 
@@ -368,67 +364,59 @@ async def execute_process_jobs(request: Request, process_id):
     return get_response(api_.execute_process(request, process_id))
 
 
-@app.route('/processes/{process_id}/jobs/{job_id}/results', methods=['GET'])
-@app.route('/processes/{process_id}/jobs/{job_id}/results/', methods=['GET'])
-async def get_process_job_result(request: Request, process_id=None,
-                                 job_id=None):
+@app.route('/jobs/{job_id}/results', methods=['GET'])
+@app.route('/jobs/{job_id}/results/', methods=['GET'])
+async def get_job_result(request: Request, job_id=None):
     """
     OGC API - Processes job result endpoint
 
     :param request: Starlette Request instance
-    :param process_id: process identifier
     :param job_id: job identifier
 
     :returns: HTTP response
     """
 
-    if 'process_id' in request.path_params:
-        process_id = request.path_params['process_id']
     if 'job_id' in request.path_params:
         job_id = request.path_params['job_id']
 
-    return get_response(api_.get_process_job_result(
-        request, process_id, job_id))
+    return get_response(api_.get_job_result(request, job_id))
 
 
-@app.route('/processes/{process_id}/jobs/{job_id}/results/{resource}',
+@app.route('/jobs/{job_id}/results/{resource}',
            methods=['GET'])
-@app.route('/processes/{process_id}/jobs/{job_id}/results/{resource}/',
+@app.route('/jobs/{job_id}/results/{resource}/',
            methods=['GET'])
-async def get_process_job_result_resource(request: Request, process_id=None,
-                                          job_id=None, resource=None):
+async def get_job_result_resource(request: Request,
+                                  job_id=None, resource=None):
     """
     OGC API - Processes job result resource endpoint
 
     :param request: Starlette Request instance
-    :param process_id: process identifier
     :param job_id: job identifier
     :param resource: job resource
 
     :returns: HTTP response
     """
 
-    if 'process_id' in request.path_params:
-        process_id = request.path_params['process_id']
     if 'job_id' in request.path_params:
         job_id = request.path_params['job_id']
     if 'resource' in request.path_params:
         resource = request.path_params['resource']
 
-    return get_response(api_.get_process_job_result_resource(
-        request, process_id, job_id, resource))
+    return get_response(api_.get_job_result_resource(
+        request, job_id, resource))
 
 
-@app.route('/collections/{collection_id}/position')
-@app.route('/collections/{collection_id}/area')
-@app.route('/collections/{collection_id}/cube')
-@app.route('/collections/{collection_id}/trajectory')
-@app.route('/collections/{collection_id}/corridor')
-@app.route('/collections/{collection_id}/instances/{instance_id}/position')
-@app.route('/collections/{collection_id}/instances/{instance_id}/area')
-@app.route('/collections/{collection_id}/instances/{instance_id}/cube')
-@app.route('/collections/{collection_id}/instances/{instance_id}/trajectory')
-@app.route('/collections/{collection_id}/instances/{instance_id}/corridor')
+@app.route('/collections/{path:collection_id}/position')
+@app.route('/collections/{path:collection_id}/area')
+@app.route('/collections/{path:collection_id}/cube')
+@app.route('/collections/{path:collection_id}/trajectory')
+@app.route('/collections/{path:collection_id}/corridor')
+@app.route('/collections/{path:collection_id}/instances/{instance_id}/position')  # noqa
+@app.route('/collections/{path:collection_id}/instances/{instance_id}/area')
+@app.route('/collections/{path:collection_id}/instances/{instance_id}/cube')
+@app.route('/collections/{path:collection_id}/instances/{instance_id}/trajectory')  # noqa
+@app.route('/collections/{path:collection_id}/instances/{instance_id}/corridor')  # noqa
 async def get_collection_edr_query(request: Request, collection_id=None, instance_id=None):  # noqa
     """
     OGC EDR API endpoints

@@ -29,6 +29,7 @@
 
 import logging
 import os
+import re  # noqa
 
 from tinydb import TinyDB, Query
 
@@ -55,7 +56,7 @@ class TinyDBCatalogueProvider(BaseProvider):
             '_metadata-anytext',
         ]
 
-        BaseProvider.__init__(self, provider_def)
+        super().__init__(provider_def)
 
         LOGGER.debug('Connecting to TinyDB db at {}'.format(self.data))
 
@@ -91,13 +92,13 @@ class TinyDBCatalogueProvider(BaseProvider):
 
         return fields
 
-    def query(self, startindex=0, limit=10, resulttype='results',
+    def query(self, offset=0, limit=10, resulttype='results',
               bbox=[], datetime_=None, properties=[], sortby=[],
               select_properties=[], skip_geometry=False, q=None, **kwargs):
         """
         query TinyDB document store
 
-        :param startindex: starting record to return (default 0)
+        :param offset: starting record to return (default 0)
         :param limit: number of records to return (default 10)
         :param resulttype: return results or hit limit (default results)
         :param bbox: bounding box [minx,miny,maxx,maxy]
@@ -155,7 +156,8 @@ class TinyDBCatalogueProvider(BaseProvider):
                 QUERY.append("(Q.properties['{}']=='{}')".format(*prop))
 
         if q is not None:
-            QUERY.append("(Q.properties['_metadata-anytext'].search('{}'))".format(q))  # noqa
+            for t in q.split():
+                QUERY.append("(Q.properties['_metadata-anytext'].search('{}', flags=re.IGNORECASE))".format(t))  # noqa
 
         QUERY_STRING = '&'.join(QUERY)
         LOGGER.debug('QUERY_STRING: {}'.format(QUERY_STRING))
@@ -199,7 +201,7 @@ class TinyDBCatalogueProvider(BaseProvider):
             results.sort(key=lambda k: k['properties'][sortby[0]['property']],
                          reverse=sort_reverse)
 
-        feature_collection['features'] = results[startindex:startindex + limit]
+        feature_collection['features'] = results[offset:offset + limit]
 
         return feature_collection
 
@@ -214,7 +216,7 @@ class TinyDBCatalogueProvider(BaseProvider):
 
         LOGGER.debug('Fetching identifier {}'.format(identifier))
 
-        record = self.db.get(Query().properties[self.id_field] == identifier)
+        record = self.db.get(Query().id == identifier)
 
         if record is None:
             raise ProviderItemNotFoundError('record does not exist')

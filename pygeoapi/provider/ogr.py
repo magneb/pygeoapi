@@ -289,13 +289,13 @@ class OGRProvider(BaseProvider):
 
         return fields
 
-    def query(self, startindex=0, limit=10, resulttype='results',
+    def query(self, offset=0, limit=10, resulttype='results',
               bbox=[], datetime_=None, properties=[], sortby=[],
               select_properties=[], skip_geometry=False, q=None, **kwargs):
         """
         Query OGR source
 
-        :param startindex: starting record to return (default 0)
+        :param offset: starting record to return (default 0)
         :param limit: number of records to return (default 10)
         :param resulttype: return results or hit limit (default results)
         :param bbox: bounding box [minx,miny,maxx,maxy]
@@ -311,7 +311,7 @@ class OGRProvider(BaseProvider):
         result = None
         try:
             if self.source_capabilities['paging']:
-                self.source_helper.enable_paging(startindex, limit)
+                self.source_helper.enable_paging(offset, limit)
 
             layer = self._get_layer()
 
@@ -353,7 +353,8 @@ class OGRProvider(BaseProvider):
                 result = self._response_feature_hits(layer)
             elif resulttype == 'results':
                 LOGGER.debug('results specified')
-                result = self._response_feature_collection(layer, limit)
+                result = self._response_feature_collection(
+                    layer, limit, skip_geometry=skip_geometry)
             else:
                 LOGGER.error('Invalid resulttype: %s' % resulttype)
 
@@ -455,13 +456,15 @@ class OGRProvider(BaseProvider):
             LOGGER.error(self.gdal.GetLastErrorMsg())
             raise gdalerr
 
-    def _ogr_feature_to_json(self, ogr_feature):
+    def _ogr_feature_to_json(self, ogr_feature, skip_geometry=False):
         geom = ogr_feature.GetGeometryRef()
         if self.transform_out:
             # Optionally reproject the geometry
             geom.Transform(self.transform_out)
 
         json_feature = ogr_feature.ExportToJson(as_object=True)
+        if skip_geometry:
+            json_feature['geometry'] = None
         try:
             json_feature['id'] = json_feature['properties'].pop(self.id_field)
         except Exception as err:
@@ -470,7 +473,7 @@ class OGRProvider(BaseProvider):
 
         return json_feature
 
-    def _response_feature_collection(self, layer, limit):
+    def _response_feature_collection(self, layer, limit, skip_geometry=False):
         """
         Assembles output from Layer query as
         GeoJSON FeatureCollection structure.
@@ -492,7 +495,8 @@ class OGRProvider(BaseProvider):
             ogr_feature = _ignore_gdal_error(layer, 'GetNextFeature')
             count = 0
             while ogr_feature is not None:
-                json_feature = self._ogr_feature_to_json(ogr_feature)
+                json_feature = self._ogr_feature_to_json(
+                    ogr_feature, skip_geometry=skip_geometry)
 
                 feature_collection['features'].append(json_feature)
 
@@ -570,7 +574,7 @@ class SourceHelper:
 
         return layer
 
-    def enable_paging(self, startindex=-1, limit=-1):
+    def enable_paging(self, offset=-1, limit=-1):
         """
         Enable paged access to dataset (OGR Driver-specific)
 
@@ -602,7 +606,7 @@ class CommonSourceHelper(SourceHelper):
 
         super().__init__(provider)
 
-        self.startindex = -1
+        self.offset = -1
         self.limit = -1
         self.result_set = None
 
@@ -626,14 +630,14 @@ class CommonSourceHelper(SourceHelper):
         finally:
             self.result_set = None
 
-    def enable_paging(self, startindex=-1, limit=-1):
+    def enable_paging(self, offset=-1, limit=-1):
         """
         Enable paged access to dataset (OGR Driver-specific)
         using OGR SQL https://gdal.org/user/ogr_sql_dialect.html
         e.g. SELECT * FROM poly LIMIT 10 OFFSET 30
 
         """
-        self.startindex = startindex
+        self.offset = offset
         self.limit = limit
 
     def disable_paging(self):
@@ -646,12 +650,12 @@ class CommonSourceHelper(SourceHelper):
     def get_layer(self):
         """
         Gets OGR Layer from opened OGR dataset.
-        When startindex defined 1 or greater will invoke
+        When offset defined 1 or greater will invoke
         OGR SQL SELECT with LIMIT and OFFSET and return
         as Layer as ResultSet from ExecuteSQL on dataset.
         :return: OGR layer object
         """
-        if self.startindex <= 0:
+        if self.offset <= 0:
             return SourceHelper.get_layer(self)
 
         self.close()
@@ -659,11 +663,11 @@ class CommonSourceHelper(SourceHelper):
         sql = 'SELECT * FROM "{ds_name}" LIMIT {limit} OFFSET {offset}'.format(
             ds_name=self.provider.layer_name,
             limit=self.limit,
-            offset=self.startindex)
+            offset=self.offset)
         self.result_set = self.provider.conn.ExecuteSQL(sql)
 
         # Reset since needs to be set each time explicitly
-        self.startindex = -1
+        self.offset = -1
         self.limit = -1
 
         if not self.result_set:
@@ -688,16 +692,16 @@ class ESRIJSONHelper(CommonSourceHelper):
 
         super().__init__(provider)
 
-    def enable_paging(self, startindex=-1, limit=-1):
+    def enable_paging(self, offset=-1, limit=-1):
         """
         Enable paged access to dataset (OGR Driver-specific)
 
         """
-        if startindex < 0:
+        if offset < 0:
             return
 
         self.provider.open_options.update(FEATURE_SERVER_PAGING=True)
-        self.startindex = startindex
+        self.offset = offset
         self.limit = limit
 
     def disable_paging(self):
@@ -710,12 +714,12 @@ class ESRIJSONHelper(CommonSourceHelper):
     def get_layer(self):
         """
         Gets OGR Layer from opened OGR dataset.
-        When startindex defined 1 or greater will invoke
+        When offset defined 1 or greater will invoke
         OGR SQL SELECT with LIMIT and OFFSET and return
         as Layer as ResultSet from ExecuteSQL on dataset.
         :return: OGR layer object
         """
-        if self.startindex <= 0:
+        if self.offset <= 0:
             return CommonSourceHelper.get_layer(self)
 
         self.close()
@@ -723,11 +727,11 @@ class ESRIJSONHelper(CommonSourceHelper):
         sql = "SELECT * FROM {ds_name} LIMIT {limit} OFFSET {offset}".format(
             ds_name=self.provider.layer_name,
             limit=self.limit,
-            offset=self.startindex)
+            offset=self.offset)
         self.result_set = self.provider.conn.ExecuteSQL(sql)
 
         # Reset since needs to be set each time explicitly
-        self.startindex = -1
+        self.offset = -1
         self.limit = -1
 
         if not self.result_set:
@@ -752,19 +756,19 @@ class WFSHelper(SourceHelper):
 
         super().__init__(provider)
 
-    def enable_paging(self, startindex=-1, limit=-1):
+    def enable_paging(self, offset=-1, limit=-1):
         """
         Enable paged access to dataset (OGR Driver-specific)
 
         """
 
-        if startindex < 0:
+        if offset < 0:
             return
 
         self.provider.gdal.SetConfigOption(
             'OGR_WFS_PAGING_ALLOWED', 'ON')
         self.provider.gdal.SetConfigOption(
-            'OGR_WFS_BASE_START_INDEX', str(startindex))
+            'OGR_WFS_BASE_START_INDEX', str(offset))
         self.provider.gdal.SetConfigOption(
             'OGR_WFS_PAGE_SIZE', str(limit))
 

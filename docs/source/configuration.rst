@@ -41,6 +41,7 @@ The ``server`` section provides directives on binding and high level tuning.
     mimetype: application/json; charset=UTF-8  # default MIME type
     encoding: utf-8  # default server encoding
     language: en-US  # default server language
+    gzip: false # default server config to gzip/compress responses to requests with gzip in the Accept-Encoding header
     cors: true  # boolean on whether server should support CORS
     pretty_print: true  # whether JSON responses should be pretty-printed
     limit: 10  # server limit on number of items to return
@@ -118,7 +119,8 @@ The ``metadata`` section provides settings for overall service metadata and desc
 ``resources``
 ^^^^^^^^^^^^^
 
-The ``resources`` section lists 1 or more dataset collections to be published by the server.
+The ``resources`` section lists 1 or more dataset collections to be published by the server.  The
+key of the resource name is the advertised collection identifier.
 
 The ``resource.type`` property is required.  Allowed types are:
 
@@ -227,6 +229,45 @@ Below is an example of how to integrate system environment variables in pygeoapi
            port: ${MY_PORT}
 
 
+Hierarchical collections
+------------------------
+
+Collections defined in the the ``resources`` section are identified by the resource key.  The
+key of the resource name is the advertised collection identifier.  For example, given the following:
+
+.. code-block:: yaml
+
+  resources:
+    lakes:
+      ...
+
+
+The resulting collection will be made available at http://localhost:5000/collections/lakes
+
+All collections are published by default to http://localhost:5000/collections.  To enable
+hierarchical collections, provide the hierarchy in the resource key.  Given the following:
+
+.. code-block:: yaml
+
+  resources:
+    naturalearth/lakes:
+      ...
+
+The resulting collection will then be made available at http://localhost:5000/collections/naturalearth/lakes
+
+.. note::
+
+  This functionality may change in the future given how hierarchical collection extension specifications
+  evolve at OGC.
+
+.. note::
+
+  Collection grouping is not available.  This means that while URLs such as http://localhost:5000/collections/naturalearth/lakes
+  function as expected, URLs such as  http://localhost:5000/collections/naturalearth will not provide
+  aggregate collection listing or querying.  This functionality is also to be determined based on
+  the evolution of hierarchical collection extension specifications at OGC.
+
+
 Linked Data
 -----------
 
@@ -262,6 +303,7 @@ For collections, at the level of items, the default JSON-LD representation adds:
 The optional configuration options for collections, at the level of an item of items, are:
 
 - If ``uri_field`` is specified, JSON-LD will be updated such that the ``@id`` has the value of ``uri_field`` for each item in a collection
+
 .. note::
    While this is enough to provide valid RDF (as GeoJSON-LD), it does not allow the *properties* of your items to be
    unambiguously interpretable.

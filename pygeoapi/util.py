@@ -45,8 +45,8 @@ from urllib.parse import urlparse
 from shapely.geometry import Polygon
 
 import dateutil.parser
-# from babel.support import Translations
-from jinja2 import Environment, FileSystemLoader
+from jinja2 import Environment, FileSystemLoader, select_autoescape
+from babel.support import Translations
 from jinja2.exceptions import TemplateNotFound
 import yaml
 
@@ -122,7 +122,8 @@ def yaml_load(fh):
     def path_constructor(loader, node):
         env_var = path_matcher.match(node.value).group(1)
         if env_var not in os.environ:
-            raise EnvironmentError('Undefined environment variable in config')
+            msg = 'Undefined environment variable {} in config'.format(env_var)
+            raise EnvironmentError(msg)
         return get_typed_value(os.path.expandvars(node.value))
 
     class EnvVarLoader(yaml.SafeLoader):
@@ -320,12 +321,16 @@ def render_j2_template(config, template, data, locale_=None):
     try:
         templates_path = config['server']['templates']['path']
         env = Environment(loader=FileSystemLoader(templates_path),
-                          extensions=['jinja2.ext.i18n'])
+                          extensions=['jinja2.ext.i18n',
+                                      'jinja2.ext.autoescape'],
+                          autoescape=select_autoescape(['html', 'xml']))
         custom_templates = True
         LOGGER.debug('using custom templates: {}'.format(templates_path))
     except (KeyError, TypeError):
         env = Environment(loader=FileSystemLoader(TEMPLATES),
-                          extensions=['jinja2.ext.i18n'])
+                          extensions=['jinja2.ext.i18n',
+                                      'jinja2.ext.autoescape'],
+                          autoescape=select_autoescape(['html', 'xml']))
         LOGGER.debug('using default templates: {}'.format(TEMPLATES))
 
     env.filters['to_json'] = to_json
@@ -343,7 +348,9 @@ def render_j2_template(config, template, data, locale_=None):
     env.filters['filter_dict_by_key_value'] = filter_dict_by_key_value
     env.globals.update(filter_dict_by_key_value=filter_dict_by_key_value)
 
-    # TODO: insert Babel Translation stuff here
+    translations = Translations.load('locale', [locale_])
+    env.install_gettext_translations(translations)
+
     try:
         template = env.get_template(template)
     except TemplateNotFound as err:

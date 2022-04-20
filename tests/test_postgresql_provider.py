@@ -36,6 +36,9 @@ import pytest
 from pygeoapi.provider.base import ProviderItemNotFoundError
 from pygeoapi.provider.postgresql import PostgreSQLProvider
 
+import os
+PASSWORD = os.environ.get('POSTGRESQL_PASSWORD', 'postgres')
+
 
 @pytest.fixture()
 def config():
@@ -45,7 +48,7 @@ def config():
         'data': {'host': '127.0.0.1',
                  'dbname': 'test',
                  'user': 'postgres',
-                 'password': 'postgres',
+                 'password': PASSWORD,
                  'search_path': ['osm', 'public']
                  },
         'id_field': 'osm_id',
@@ -54,9 +57,22 @@ def config():
     }
 
 
+@pytest.fixture()
+def config_with_properties(config):
+    config_ = {'properties': ['name', 'waterway', 'width', 'does_not_exist']}
+    config_.update(config)
+    return config_
+
+
+@pytest.fixture()
+def config_materialised_view(config):
+    config_ = config.copy()
+    config_['table'] = 'hotosm_bdi_drains'
+    return config_
+
+
 def test_query(config):
     """Testing query for a valid JSON object with geometry"""
-
     p = PostgreSQLProvider(config)
     feature_collection = p.query()
     assert feature_collection.get('type', None) == 'FeatureCollection'
@@ -69,8 +85,24 @@ def test_query(config):
     assert geometry is not None
 
 
+def test_query_materialised_view(config, config_materialised_view):
+    """Testing query using a materialised view"""
+    p = PostgreSQLProvider(config_materialised_view)
+    features = p.query(limit=14776).get("features", None)
+    properties = features[0].get("properties", None)
+    # Only width and depth properties should be available
+    assert list(properties.keys()) == ["osm_id", "width", "depth"]
+    p_full = PostgreSQLProvider(config)
+    full_features = p_full.query(limit=14776).get("features", None)
+    drain_features = [
+        f for f in full_features if f["properties"]["waterway"] == "drain"
+    ]
+    # All drains from the original dataset should be in the view
+    assert len(features) == len(drain_features)
+
+
 def test_query_with_property_filter(config):
-    """Test query  valid features when filtering by property"""
+    """Test query valid features when filtering by property"""
     p = PostgreSQLProvider(config)
     feature_collection = p.query(properties=[("waterway", "stream")])
     features = feature_collection.get('features', None)
@@ -79,7 +111,7 @@ def test_query_with_property_filter(config):
                features))
     assert (len(features) == len(stream_features))
 
-    feature_collection = p.query()
+    feature_collection = p.query(limit=50)
     features = feature_collection.get('features', None)
     stream_features = list(
         filter(lambda feature: feature['properties']['waterway'] == 'stream',
@@ -89,6 +121,20 @@ def test_query_with_property_filter(config):
                features))
     assert (len(features) != len(stream_features))
     assert (len(other_features) != 0)
+
+
+def test_query_with_config_properties(config_with_properties):
+    """
+    Test that query is restricted by properties in the config.
+    No properties should be returned that are not requested.
+    Note that not all requested properties have to exist in the query result.
+    """
+    p = PostgreSQLProvider(config_with_properties)
+    feature_collection = p.query()
+    feature = feature_collection.get('features', None)[0]
+    properties = feature.get('properties', None)
+    for property_name in properties.keys():
+        assert property_name in config_with_properties["properties"]
 
 
 def test_query_hits(config):
@@ -112,6 +158,32 @@ def test_query_bbox(config):
         bbox=[29.3373, -3.4099, 29.3761, -3.3924]
     )
     assert len(boxed_feature_collection['features']) == 5
+
+
+def test_query_sortby(config):
+    """Test query with sorting"""
+    psp = PostgreSQLProvider(config)
+    up = psp.query(sortby=[{'property': 'osm_id', 'order': '+'}])
+    assert up['features'][0]['id'] == 13990765
+    down = psp.query(sortby=[{'property': 'osm_id', 'order': '-'}])
+    assert down['features'][0]['id'] == 620735702
+
+    name = psp.query(sortby=[{'property': 'name', 'order': '+'}])
+    assert name['features'][0]['properties']['name'] == 'Agasasa'
+
+
+def test_query_skip_geometry(config):
+    """Test query without geometry"""
+    psp = PostgreSQLProvider(config)
+    skipped = psp.query(skip_geometry=True)
+    assert skipped['features'][0]['geometry'] is None
+
+
+def test_query_select_properties(config):
+    """Test query with selected properties"""
+    psp = PostgreSQLProvider(config)
+    props = psp.query(select_properties=['name'])
+    assert len(props['features'][0]['properties']) == 1
 
 
 def test_get(config):

@@ -64,10 +64,16 @@ def test_query(config):
     assert results['features'][0]['id'] == 'e5a71860-827c-453f-990e-0e0ba0ee67bb'  # noqa
     assert results['features'][0]['properties']['type'] == 'RI_622'
 
-    results = p.query(q='crops')
-    assert len(results['features']) == 6
-    assert results['numberMatched'] == 6
-    assert results['numberReturned'] == 6
+    for term in ['crops', 'Crops', 'CROPS', 'CrOpS', 'CROps', 'CRops']:
+        results = p.query(q=term)
+        assert len(results['features']) == 6
+        assert results['numberMatched'] == 6
+        assert results['numberReturned'] == 6
+
+    results = p.query(q='crops barley')
+    assert len(results['features']) == 2
+    assert results['numberMatched'] == 2
+    assert results['numberReturned'] == 2
 
     results = p.query(limit=1)
     assert len(results['features']) == 1
@@ -89,11 +95,11 @@ def test_query(config):
     assert len(results['features']) == 10
     assert results['features'][0]['id'] == 'e5a71860-827c-453f-990e-0e0ba0ee67bb'  # noqa
 
-    results = p.query(startindex=1, limit=1)
+    results = p.query(offset=1, limit=1)
     assert len(results['features']) == 1
     assert results['features'][0]['id'] == '64e70d29-57a3-44a8-b55c-d465639d1e2e'  # noqa
 
-    results = p.query(startindex=2, limit=2)
+    results = p.query(offset=2, limit=2)
     assert len(results['features']) == 2
     assert results['features'][0]['id'] == 'd3028ad0-b0d0-47ff-bcc3-d383881e17cd'  # noqa
 
